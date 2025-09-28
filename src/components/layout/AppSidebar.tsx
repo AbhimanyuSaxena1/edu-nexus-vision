@@ -49,6 +49,7 @@ const teacherItems = [
   { title: 'My Classes', url: '/classes', icon: Users },
   { title: 'Live Classroom', url: '/live-classroom', icon: Video },
   { title: 'Attendance Monitor', url: '/attendance-monitor', icon: UserCheck },
+  { title: 'Manual Attendance', url: '/manual-attendance', icon: UserCheck },
   { title: 'Quiz Management', url: '/quiz-management', icon: ClipboardList },
   { title: 'Course Content', url: '/course-content', icon: BookOpen },
   { title: 'Timetable', url: '/timetable', icon: Calendar },
