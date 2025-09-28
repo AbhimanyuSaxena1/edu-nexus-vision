@@ -18,6 +18,19 @@ import AttendanceReports from "./pages/AttendanceReports";
 import AcademicAnalytics from "./pages/AcademicAnalytics";
 import ResourceAllocation from "./pages/ResourceAllocation";
 import NotificationsPage from "./pages/NotificationsPage";
+import MyCourses from "./pages/MyCourses";
+import AttendancePage from "./pages/AttendancePage";
+import QuizzesPage from "./pages/QuizzesPage";
+import TimetablePage from "./pages/TimetablePage";
+import AITutorPage from "./pages/AITutorPage";
+import TeamFinderPage from "./pages/TeamFinderPage";
+import CertificationsPage from "./pages/CertificationsPage";
+import MyClasses from "./pages/MyClasses";
+import LiveClassroom from "./pages/LiveClassroom";
+import AttendanceMonitor from "./pages/AttendanceMonitor";
+import QuizManagement from "./pages/QuizManagement";
+import CourseContent from "./pages/CourseContent";
+import AnalyticsPage from "./pages/AnalyticsPage";
 
 const queryClient = new QueryClient();
 
@@ -33,20 +46,20 @@ const App = () => (
               <Route path="/" element={<Index />} />
               <Route path="/auth" element={<AuthPage />} />
               <Route path="/dashboard" element={<AppLayout><Dashboard /></AppLayout>} />
-              <Route path="/courses" element={<AppLayout><div className="p-6">Courses page coming soon...</div></AppLayout>} />
-              <Route path="/attendance" element={<AppLayout><div className="p-6">Attendance page coming soon...</div></AppLayout>} />
-              <Route path="/quizzes" element={<AppLayout><div className="p-6">Quizzes page coming soon...</div></AppLayout>} />
-              <Route path="/timetable" element={<AppLayout><div className="p-6">Timetable page coming soon...</div></AppLayout>} />
-              <Route path="/ai-tutor" element={<AppLayout><div className="p-6">AI Tutor page coming soon...</div></AppLayout>} />
-              <Route path="/team-finder" element={<AppLayout><div className="p-6">Team Finder page coming soon...</div></AppLayout>} />
-              <Route path="/certifications" element={<AppLayout><div className="p-6">Certifications page coming soon...</div></AppLayout>} />
+              <Route path="/courses" element={<AppLayout><MyCourses /></AppLayout>} />
+              <Route path="/attendance" element={<AppLayout><AttendancePage /></AppLayout>} />
+              <Route path="/quizzes" element={<AppLayout><QuizzesPage /></AppLayout>} />
+              <Route path="/timetable" element={<AppLayout><TimetablePage /></AppLayout>} />
+              <Route path="/ai-tutor" element={<AppLayout><AITutorPage /></AppLayout>} />
+              <Route path="/team-finder" element={<AppLayout><TeamFinderPage /></AppLayout>} />
+              <Route path="/certifications" element={<AppLayout><CertificationsPage /></AppLayout>} />
               <Route path="/notifications" element={<AppLayout><NotificationsPage /></AppLayout>} />
-              <Route path="/classes" element={<AppLayout><div className="p-6">Classes page coming soon...</div></AppLayout>} />
-              <Route path="/live-classroom" element={<AppLayout><div className="p-6">Live Classroom page coming soon...</div></AppLayout>} />
-              <Route path="/attendance-monitor" element={<AppLayout><div className="p-6">Attendance Monitor page coming soon...</div></AppLayout>} />
-              <Route path="/quiz-management" element={<AppLayout><div className="p-6">Quiz Management page coming soon...</div></AppLayout>} />
-              <Route path="/course-content" element={<AppLayout><div className="p-6">Course Content page coming soon...</div></AppLayout>} />
-              <Route path="/analytics" element={<AppLayout><div className="p-6">Analytics page coming soon...</div></AppLayout>} />
+              <Route path="/classes" element={<AppLayout><MyClasses /></AppLayout>} />
+              <Route path="/live-classroom" element={<AppLayout><LiveClassroom /></AppLayout>} />
+              <Route path="/attendance-monitor" element={<AppLayout><AttendanceMonitor /></AppLayout>} />
+              <Route path="/quiz-management" element={<AppLayout><QuizManagement /></AppLayout>} />
+              <Route path="/course-content" element={<AppLayout><CourseContent /></AppLayout>} />
+              <Route path="/analytics" element={<AppLayout><AnalyticsPage /></AppLayout>} />
               <Route path="/department" element={<AppLayout><DepartmentOverview /></AppLayout>} />
               <Route path="/faculty" element={<AppLayout><FacultyManagement /></AppLayout>} />
               <Route path="/course-management" element={<AppLayout><CourseManagement /></AppLayout>} />
