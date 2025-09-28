@@ -12,6 +12,12 @@ import Dashboard from "./pages/Dashboard";
 import NotFound from "./pages/NotFound";
 import DepartmentOverview from "./pages/DepartmentOverview";
 import FacultyManagement from "./pages/FacultyManagement";
+import CourseManagement from "./pages/CourseManagement";
+import TimetableGeneration from "./pages/TimetableGeneration";
+import AttendanceReports from "./pages/AttendanceReports";
+import AcademicAnalytics from "./pages/AcademicAnalytics";
+import ResourceAllocation from "./pages/ResourceAllocation";
+import NotificationsPage from "./pages/NotificationsPage";
 
 const queryClient = new QueryClient();
 
@@ -34,7 +40,7 @@ const App = () => (
               <Route path="/ai-tutor" element={<AppLayout><div className="p-6">AI Tutor page coming soon...</div></AppLayout>} />
               <Route path="/team-finder" element={<AppLayout><div className="p-6">Team Finder page coming soon...</div></AppLayout>} />
               <Route path="/certifications" element={<AppLayout><div className="p-6">Certifications page coming soon...</div></AppLayout>} />
-              <Route path="/notifications" element={<AppLayout><div className="p-6">Notifications page coming soon...</div></AppLayout>} />
+              <Route path="/notifications" element={<AppLayout><NotificationsPage /></AppLayout>} />
               <Route path="/classes" element={<AppLayout><div className="p-6">Classes page coming soon...</div></AppLayout>} />
               <Route path="/live-classroom" element={<AppLayout><div className="p-6">Live Classroom page coming soon...</div></AppLayout>} />
               <Route path="/attendance-monitor" element={<AppLayout><div className="p-6">Attendance Monitor page coming soon...</div></AppLayout>} />
@@ -43,11 +49,11 @@ const App = () => (
               <Route path="/analytics" element={<AppLayout><div className="p-6">Analytics page coming soon...</div></AppLayout>} />
               <Route path="/department" element={<AppLayout><DepartmentOverview /></AppLayout>} />
               <Route path="/faculty" element={<AppLayout><FacultyManagement /></AppLayout>} />
-              <Route path="/course-management" element={<AppLayout><div className="p-6">Course Management page coming soon...</div></AppLayout>} />
-              <Route path="/timetable-generation" element={<AppLayout><div className="p-6">Timetable Generation page coming soon...</div></AppLayout>} />
-              <Route path="/attendance-reports" element={<AppLayout><div className="p-6">Attendance Reports page coming soon...</div></AppLayout>} />
-              <Route path="/academic-analytics" element={<AppLayout><div className="p-6">Academic Analytics page coming soon...</div></AppLayout>} />
-              <Route path="/resources" element={<AppLayout><div className="p-6">Resources page coming soon...</div></AppLayout>} />
+              <Route path="/course-management" element={<AppLayout><CourseManagement /></AppLayout>} />
+              <Route path="/timetable-generation" element={<AppLayout><TimetableGeneration /></AppLayout>} />
+              <Route path="/attendance-reports" element={<AppLayout><AttendanceReports /></AppLayout>} />
+              <Route path="/academic-analytics" element={<AppLayout><AcademicAnalytics /></AppLayout>} />
+              <Route path="/resources" element={<AppLayout><ResourceAllocation /></AppLayout>} />
               {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
               <Route path="*" element={<NotFound />} />
             </Routes>
