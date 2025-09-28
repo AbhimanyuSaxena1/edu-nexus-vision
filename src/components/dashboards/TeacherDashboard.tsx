@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Users, Video, BookOpen, BarChart3, Camera, AlertTriangle, CheckCircle, Clock, VideoOff, User, UserCheck, UserX } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 
@@ -271,12 +271,12 @@ export function TeacherDashboard() {
           <p className="text-muted-foreground">Manage your classes and monitor student progress</p>
         </div>
         <div className="flex space-x-2">
-         <a href="/live-classroom">
-          <Button variant="outline">
-            <Video className="mr-2 h-4 w-4" />
-            Live Class
-          </Button>
-         </a>
+          <a href="/manual-attendance">
+            <Button variant="outline">
+              <UserCheck className="mr-2 h-4 w-4" />
+              Manual Attendance
+            </Button>
+          </a>
           <a href="/attendance-monitor">
           <Button className="bg-gradient-to-r from-primary to-accent">
             <Camera className="mr-2 h-4 w-4" />
