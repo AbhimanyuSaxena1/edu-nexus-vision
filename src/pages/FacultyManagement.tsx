@@ -6,10 +6,10 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { MoreHorizontal, UserPlus } from 'lucide-react';
 
 const faculty = [
-  { id: 'F001', name: 'Dr. Sarah Johnson', email: 'sarah.j@example.com', role: 'Professor', courses: 4, status: 'Active' },
-  { id: 'F002', name: 'Prof. Michael Wilson', email: 'michael.w@example.com', role: 'Associate Professor', courses: 3, status: 'On Leave' },
-  { id: 'F003', name: 'Dr. Alice Brown', email: 'alice.b@example.com', role: 'Assistant Professor', courses: 2, status: 'Active' },
-  { id: 'F004', name: 'Dr. Robert Davis', email: 'robert.d@example.com', role: 'Professor', courses: 5, status: 'Active' },
+  { id: 'F001', name: 'Vijay Chouhan', email: 'VC@example.com', role: 'Professor', courses: 4, status: 'Active' },
+  { id: 'F002', name: 'Virendra Dani', email: 'Virendra.w@example.com', role: 'Associate Professor', courses: 3, status: 'On Leave' },
+  { id: 'F003', name: 'Abhishek Singh', email: 'ABR.b@example.com', role: 'Assistant Professor', courses: 2, status: 'Active' },
+  { id: 'F004', name: 'Shweta pandey', email: 'Shweta.d@example.com', role: 'Professor', courses: 5, status: 'Active' },
 ];
 
 export default function FacultyManagement() {

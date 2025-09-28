@@ -198,7 +198,7 @@ export function HODDashboard() {
                   DS
                 </div>
                 <div>
-                  <p className="font-medium">Dr. Sarah Johnson</p>
+                  <p className="font-medium">Vijay Chouhan</p>
                   <p className="text-sm text-muted-foreground">Machine Learning • 4 classes</p>
                 </div>
               </div>
@@ -211,7 +211,7 @@ export function HODDashboard() {
                   MW
                 </div>
                 <div>
-                  <p className="font-medium">Prof. Michael Wilson</p>
+                  <p className="font-medium">Virendra Dani</p>
                   <p className="text-sm text-muted-foreground">Data Structures • 3 classes</p>
                 </div>
               </div>
@@ -224,7 +224,7 @@ export function HODDashboard() {
                   AB
                 </div>
                 <div>
-                  <p className="font-medium">Dr. Alice Brown</p>
+                  <p className="font-medium">Abhishek Singh</p>
                   <p className="text-sm text-muted-foreground">Cybersecurity • 2 classes</p>
                 </div>
               </div>
