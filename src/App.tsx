@@ -32,6 +32,7 @@ import QuizManagement from "./pages/QuizManagement";
 import CourseContent from "./pages/CourseContent";
 import AnalyticsPage from "./pages/AnalyticsPage";
 import ProfileSettingsPage from "./ProfileSettingsPage";
+import ManualAttendancePage from "./ManualAttendancePage";
 import SmartCoursesPage from "./components/dashboards/SmartCoursesPage";
 
 const queryClient = new QueryClient();
@@ -61,6 +62,7 @@ const App = () => (
               <Route path="/live-classroom" element={<AppLayout><LiveClassroom /></AppLayout>} />
               <Route path="/attendance-monitor" element={<AppLayout><AttendanceMonitor /></AppLayout>} />
               <Route path="/quiz-management" element={<AppLayout><QuizManagement /></AppLayout>} />
+              <Route path="/manual-attendance" element={<AppLayout><ManualAttendancePage /></AppLayout>} />
               <Route path="/course-content" element={<AppLayout><CourseContent /></AppLayout>} />
               <Route path="/analytics" element={<AppLayout><AnalyticsPage /></AppLayout>} />
               <Route path="/profile-settings" element={<AppLayout><ProfileSettingsPage /></AppLayout>} />
