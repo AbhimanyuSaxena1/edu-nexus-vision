@@ -2,7 +2,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { BookOpen, Clock, Award, TrendingUp, Calendar, Bell, Brain, Users } from 'lucide-react';
+import { BookOpen, Clock, Award, TrendingUp, Calendar, Bell, Brain, Users, Link } from 'lucide-react';
 
 export function StudentDashboard() {
   return (
@@ -12,10 +12,12 @@ export function StudentDashboard() {
           <h1 className="text-3xl font-bold text-foreground">Student Dashboard</h1>
           <p className="text-muted-foreground">Track your academic progress and stay organized</p>
         </div>
+       <a className='cursor-pointer' href="/ai-tutor">
         <Button className="bg-gradient-to-r from-primary to-accent">
           <Brain className="mr-2 h-4 w-4" />
           Ask AI Tutor
         </Button>
+       </a>
       </div>
 
       {/* Quick Stats */}
