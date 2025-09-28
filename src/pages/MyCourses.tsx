@@ -6,7 +6,7 @@ const enrolledCourses = [
   {
     id: 'C001',
     name: 'Advanced Algorithms',
-    instructor: 'Dr. Wilson',
+    instructor: 'Atish Mishra',
     progress: 75,
     nextClass: 'Tomorrow, 10:00 AM',
     attendance: 92,
@@ -14,7 +14,7 @@ const enrolledCourses = [
   {
     id: 'C002',
     name: 'Network Security',
-    instructor: 'Prof. Evans',
+    instructor: 'Ahishek Shingh Rathore',
     progress: 45,
     nextClass: 'Today, 2:00 PM',
     attendance: 85,
@@ -22,9 +22,25 @@ const enrolledCourses = [
   {
     id: 'C003',
     name: 'Data Visualization',
-    instructor: 'Dr. Lee',
+    instructor: 'Pritesh Kumar Jain',
     progress: 90,
-    nextClass: 'Wednesday, 11:00 AM',
+    nextClass: 'Wednesday, 11:15 AM',
+    attendance: 98,
+  },
+   {
+    id: 'C004',
+    name: 'Image Processing',
+    instructor: 'Vijay Chouhan',
+    progress: 90,
+    nextClass: 'Wednesday, 12:45 AM',
+    attendance: 98,
+  },
+   {
+    id: 'C003',
+    name: 'Networking',
+    instructor: 'Virendra Dani',
+    progress: 33,
+    nextClass: 'Tommorrow, 11:00 AM',
     attendance: 98,
   },
 ];

@@ -13,14 +13,18 @@ export function TeacherDashboard() {
           <p className="text-muted-foreground">Manage your classes and monitor student progress</p>
         </div>
         <div className="flex space-x-2">
+         <a href="/live-classroom">
           <Button variant="outline">
             <Video className="mr-2 h-4 w-4" />
-            Start Live Class
+            Live Class
           </Button>
+         </a>
+          <a href="/attendance-monitor">
           <Button className="bg-gradient-to-r from-primary to-accent">
             <Camera className="mr-2 h-4 w-4" />
             AI Attendance
           </Button>
+          </a>
         </div>
       </div>
 

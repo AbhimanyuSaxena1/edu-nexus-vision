@@ -4,9 +4,14 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Users, UserPlus } from 'lucide-react';
 
 const availableStudents = [
-  { name: 'John Doe', skills: ['React', 'Node.js'] },
-  { name: 'Jane Smith', skills: ['Python', 'Data Science'] },
-  { name: 'Peter Jones', skills: ['Java', 'Spring'] },
+  { name: 'Abhimanyu Saxena', skills: ['React', 'Node.js'] },
+  { name: 'Ayush Prajapat', skills: ['Python', 'Data Science'] },
+  { name: 'Sambhav Surana', skills: ['Java', 'Spring'] },
+  { name: 'Ashlesha Panda', skills: ['Java', 'Spring'] },
+  { name: 'Piyush Nagar', skills: ['Java', 'Spring'] },
+  { name: 'Khushi', skills: ['Python', 'Data Science'] },
+  { name: 'Adamya Gupta', skills: ['Ui/ux', 'Data Science'] },
+
 ];
 
 export default function TeamFinderPage() {
