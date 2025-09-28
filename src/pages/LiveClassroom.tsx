@@ -5,10 +5,8 @@ import { Video, VideoOff, Check, X, Camera } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 
 const students = [
-  { name: 'Raj Mohan', status: 'Present' },
-  { name: 'Khushi', status: 'Present' },
-  { name: 'Chavi', status: 'Absent' },
-  { name: '', status: 'Present' },
+  { name: 'Raj Mohan', status: 'Absent' },
+  { name: 'Khushi', status: 'Absent' },
 ];
 
 export default function LiveClassroom() {
