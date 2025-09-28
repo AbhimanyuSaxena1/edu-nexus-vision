@@ -33,6 +33,7 @@ import CourseContent from "./pages/CourseContent";
 import AnalyticsPage from "./pages/AnalyticsPage";
 import ProfileSettingsPage from "./ProfileSettingsPage";
 import ManualAttendancePage from "./ManualAttendancePage";
+import TakeQuizPage from "./pages/TakeQuizPage";
 import SmartCoursesPage from "./components/dashboards/SmartCoursesPage";
 
 const queryClient = new QueryClient();
@@ -52,6 +53,7 @@ const App = () => (
               <Route path="/courses" element={<AppLayout><MyCourses /></AppLayout>} />
               <Route path="/attendance" element={<AppLayout><AttendancePage /></AppLayout>} />
               <Route path="/quizzes" element={<AppLayout><QuizzesPage /></AppLayout>} />
+              <Route path="/quiz/:quizId" element={<AppLayout><TakeQuizPage /></AppLayout>} />
               <Route path="/timetable" element={<AppLayout><TimetablePage /></AppLayout>} />
               <Route path="/ai-tutor" element={<AppLayout><AITutorPage /></AppLayout>} />
               <Route path="/smart-courses" element={<AppLayout><SmartCoursesPage /></AppLayout>} />

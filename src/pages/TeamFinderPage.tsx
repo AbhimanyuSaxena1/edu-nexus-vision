@@ -9,7 +9,7 @@ const availableStudents = [
   { name: 'Sambhav Surana', skills: ['Java', 'Spring'] },
   { name: 'Ashlesha Panda', skills: ['Java', 'Spring'] },
   { name: 'Piyush Nagar', skills: ['Java', 'Spring'] },
-  { name: 'Khushi', skills: ['Python', 'Data Science'] },
+  { name: 'Devanshu Kothari', skills: ['Python', 'Data Science'] },
   { name: 'Adamya Gupta', skills: ['Ui/ux', 'Data Science'] },
 
 ];

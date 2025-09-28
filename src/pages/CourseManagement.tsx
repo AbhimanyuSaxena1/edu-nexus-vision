@@ -5,10 +5,10 @@ import { Button } from '@/components/ui/button';
 import { MoreHorizontal, PlusCircle } from 'lucide-react';
 
 const courses = [
-  { id: 'C001', code: 'CS301', name: 'Advanced Algorithms', department: 'Computer Science', credits: 3, instructor: 'Dr. Wilson' },
-  { id: 'C002', code: 'IT402', name: 'Network Security', department: 'Information Technology', credits: 4, instructor: 'Prof. Evans' },
-  { id: 'C003', code: 'DS202', name: 'Data Visualization', department: 'Data Science', credits: 3, instructor: 'Dr. Lee' },
-  { id: 'C004', code: 'CS405', name: 'Operating Systems', department: 'Computer Science', credits: 4, instructor: 'Dr. Brown' },
+  { id: 'C001', code: 'CS301', name: 'Advanced Algorithms', department: 'Computer Science', credits: 3, instructor: 'Prof. Virendra' },
+  { id: 'C002', code: 'IT402', name: 'Network Security', department: 'Information Technology', credits: 4, instructor: 'Prof. Sakshi' },
+  { id: 'C003', code: 'DS202', name: 'Data Visualization', department: 'Data Science', credits: 3, instructor: 'Dr. PK Sharma' },
+  { id: 'C004', code: 'CS405', name: 'Operating Systems', department: 'Computer Science', credits: 4, instructor: 'Dr. Sandeep' },
 ];
 
 export default function CourseManagement() {

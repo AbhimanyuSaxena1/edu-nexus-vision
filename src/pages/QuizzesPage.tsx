@@ -2,6 +2,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ClipboardList, Clock, HelpCircle } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 const quizzes = [
   { id: 1, title: 'Week 8 Quiz', course: 'Advanced Algorithms', status: 'Upcoming', due: '3 days', type: 'Weekly' },
@@ -48,7 +49,11 @@ export default function QuizzesPage() {
               )}
             </CardContent>
             <CardFooter>
-              {quiz.status === 'Upcoming' && <Button className="w-full">Start Quiz</Button>}
+              {quiz.status === 'Upcoming' && (
+                <Button asChild className="w-full">
+                  <Link to={`/quiz/${quiz.id}`}>Start Quiz</Link>
+                </Button>
+              )}
               {quiz.status === 'Practice' && <Button variant="secondary" className="w-full">Start Practice</Button>}
               {quiz.status === 'Completed' && <Button variant="outline" className="w-full">Review Answers</Button>}
               {quiz.status === 'Missed' && <Button variant="ghost" className="w-full" disabled><HelpCircle className="mr-2 h-4 w-4" />Request Extension</Button>}

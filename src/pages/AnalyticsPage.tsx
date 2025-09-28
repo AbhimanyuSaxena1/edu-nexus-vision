@@ -1,6 +1,6 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { TrendingUp, Users, ClipboardCheck, TrendingDown } from 'lucide-react';
-import { Progress } from '@/components/ui/progress';
+import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
 const kpis = [
   { title: 'Average Quiz Score', value: '82%', change: '+5% this month', icon: ClipboardCheck },
@@ -22,6 +22,9 @@ const attendanceData = [
   { name: 'Operating Systems', attendance: 92 },
   { name: 'Machine Learning', attendance: 98 },
 ];
+
+const QUIZ_COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f97316'];
+const ATTENDANCE_COLORS = ['#22c55e', '#14b8a6', '#f59e0b', '#0ea5e9'];
 
 export default function AnalyticsPage() {
   return (
@@ -50,16 +53,18 @@ export default function AnalyticsPage() {
             <CardTitle>Quiz Score Distribution</CardTitle>
             <CardDescription>Average scores across your classes.</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
-            {quizScoreData.map((classData) => (
-              <div key={classData.name}>
-                <div className="flex justify-between text-sm mb-1">
-                  <span>{classData.name}</span>
-                  <span className="font-semibold">{classData.score}%</span>
-                </div>
-                <Progress value={classData.score} />
-              </div>
-            ))}
+          <CardContent className="h-[300px] w-full">
+            <ResponsiveContainer>
+              <PieChart>
+                <Pie data={quizScoreData} dataKey="score" nameKey="name" cx="50%" cy="50%" outerRadius={80} label stroke="black">
+                  {quizScoreData.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={QUIZ_COLORS[index % QUIZ_COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip formatter={(value: number) => `${value}%`} />
+                <Legend />
+              </PieChart>
+            </ResponsiveContainer>
           </CardContent>
         </Card>
         <Card>
@@ -67,16 +72,18 @@ export default function AnalyticsPage() {
             <CardTitle>Attendance Trends</CardTitle>
             <CardDescription>Average attendance for all classes.</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
-            {attendanceData.map((classData) => (
-              <div key={classData.name}>
-                <div className="flex justify-between text-sm mb-1">
-                  <span>{classData.name}</span>
-                  <span className="font-semibold">{classData.attendance}%</span>
-                </div>
-                <Progress value={classData.attendance} className="[&>*]:bg-green-500" />
-              </div>
-            ))}
+          <CardContent className="h-[300px] w-full">
+            <ResponsiveContainer>
+              <PieChart>
+                <Pie data={attendanceData} dataKey="attendance" nameKey="name" cx="50%" cy="50%" outerRadius={80} label stroke="black">
+                  {attendanceData.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={ATTENDANCE_COLORS[index % ATTENDANCE_COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip formatter={(value: number) => `${value}%`} />
+                <Legend />
+              </PieChart>
+            </ResponsiveContainer>
           </CardContent>
         </Card>
       </div>
