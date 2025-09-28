@@ -2,9 +2,42 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Users, Video, BookOpen, BarChart3, Camera, AlertTriangle, CheckCircle, Clock } from 'lucide-react';
+import { Users, Video, BookOpen, BarChart3, Camera, AlertTriangle, CheckCircle, Clock, VideoOff } from 'lucide-react';
+import { useState, useRef, useEffect } from 'react';
 
 export function TeacherDashboard() {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [isCameraOn, setIsCameraOn] = useState(false);
+  const [stream, setStream] = useState<MediaStream | null>(null);
+
+  const toggleCamera = async () => {
+    if (isCameraOn) {
+      stream?.getTracks().forEach(track => track.stop());
+      setStream(null);
+      setIsCameraOn(false);
+    } else {
+      try {
+        const mediaStream = await navigator.mediaDevices.getUserMedia({ video: true });
+        setStream(mediaStream);
+        setIsCameraOn(true);
+      } catch (err) {
+        console.error("Error accessing camera:", err);
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (isCameraOn && videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+    }
+    // Cleanup function to stop camera when component unmounts
+    return () => {
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, [isCameraOn, stream]);
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -91,13 +124,20 @@ export function TeacherDashboard() {
             <CardDescription>Real-time attendance tracking with AI</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="aspect-video bg-muted rounded-lg flex items-center justify-center mb-4">
-              <div className="text-center">
-                <Camera className="h-12 w-12 text-muted-foreground mx-auto mb-2" />
-                <p className="text-muted-foreground">Camera feed will appear here</p>
-                <Button className="mt-2" size="sm">Enable Camera</Button>
+            {isCameraOn ? (
+              <video ref={videoRef} autoPlay playsInline className="w-full h-full aspect-video rounded-lg mb-4" />
+            ) : (
+              <div className="aspect-video bg-muted rounded-lg flex items-center justify-center mb-4">
+                <div className="text-center">
+                  <Camera className="h-12 w-12 text-muted-foreground mx-auto mb-2" />
+                  <p className="text-muted-foreground">Camera feed will appear here</p>
+                </div>
               </div>
-            </div>
+            )}
+            <Button onClick={toggleCamera} className="w-full" variant={isCameraOn ? 'destructive' : 'default'}>
+              {isCameraOn ? <VideoOff className="mr-2 h-4 w-4" /> : <Video className="mr-2 h-4 w-4" />}
+              {isCameraOn ? 'Disable Camera' : 'Enable Camera'}
+            </Button>
             
             <div className="grid grid-cols-3 gap-4 text-center">
               <div>
