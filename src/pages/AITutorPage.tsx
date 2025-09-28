@@ -4,6 +4,8 @@ import { Input } from '@/components/ui/input';
 import { BrainCircuit } from 'lucide-react';
 
 export default function AITutorPage() {
+
+  
   return (
     <div className="container mx-auto p-6 flex flex-col items-center justify-center h-full min-h-[calc(100vh-200px)]">
       <Card className="w-full max-w-2xl">

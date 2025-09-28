@@ -1,7 +1,8 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { Video, VideoOff, Check, X } from 'lucide-react';
+import { Video, VideoOff, Check, X, Camera } from 'lucide-react';
+import { useState, useRef, useEffect } from 'react';
 
 const students = [
   { name: 'Alice Johnson', status: 'Present' },
@@ -11,11 +12,45 @@ const students = [
 ];
 
 export default function LiveClassroom() {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [isCameraOn, setIsCameraOn] = useState(false);
+  const [stream, setStream] = useState<MediaStream | null>(null);
+
+  const startCamera = async () => {
+    try {
+      const mediaStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      setStream(mediaStream);
+      setIsCameraOn(true);
+    } catch (err) {
+      console.error("Error accessing camera:", err);
+    }
+  };
+
+  const stopCamera = () => {
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+      setStream(null);
+      setIsCameraOn(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isCameraOn && videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+    }
+    // Cleanup function to stop camera when component unmounts
+    return () => {
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, [isCameraOn, stream]);
+
   return (
     <div className="container mx-auto p-6">
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-3xl font-bold">Live Classroom</h1>
-        <Button variant="destructive">
+        <Button variant="destructive" onClick={stopCamera}>
           <VideoOff className="mr-2 h-4 w-4" />
           End Session
         </Button>
@@ -31,9 +66,19 @@ export default function LiveClassroom() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="aspect-video bg-muted rounded-lg flex items-center justify-center">
-                <p className="text-muted-foreground">Video feed placeholder</p>
-              </div>
+              {isCameraOn ? (
+                <video ref={videoRef} autoPlay playsInline className="w-full h-full aspect-video rounded-lg" />
+              ) : (
+                <div className="aspect-video bg-muted rounded-lg flex items-center justify-center">
+                  <div className="text-center">
+                    <Camera className="h-12 w-12 text-muted-foreground mx-auto mb-2" />
+                    <p className="text-muted-foreground mb-2">Camera is off</p>
+                    <Button onClick={startCamera}>
+                      <Video className="mr-2 h-4 w-4" /> Enable Camera
+                    </Button>
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>
