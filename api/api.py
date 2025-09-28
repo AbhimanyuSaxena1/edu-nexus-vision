@@ -16,7 +16,9 @@ from PIL import Image
 from typing import Dict, List, Optional
 from db import DatabaseManager
 import requests
+import apiTutor
 from tqdm import tqdm
+
 
 def download_model(model_url: str, save_path: str = "yolov12l-face.pt") -> str:
     """
@@ -421,6 +423,7 @@ face_api = FaceRecognitionAPI(model_path=download_model(model_url), face_img_pat
 
 # Create FastAPI app
 app = FastAPI(title="Enhanced Face Recognition API", version="2.0")
+tutor = apiTutor.AiTutor();
 
 # Add CORS middleware
 app.add_middleware(
@@ -448,6 +451,13 @@ def base64_to_image(img_base64):
     return img
 
 # API Endpoints
+class ChatRequest(BaseModel):
+    question: str
+
+@app.post("/ask")
+async def ask_tutor(req: ChatRequest):
+    answer = tutor.ask(req.question)
+    return {"answer": answer}
 
 @app.post("/analyze_frame")
 async def analyze_frame(file: UploadFile = File(...), use_tracking: bool = Form(True)):
