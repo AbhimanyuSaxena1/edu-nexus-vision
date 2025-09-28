@@ -555,29 +555,156 @@ async def get_all_faces():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting faces: {str(e)}")
 
+@app.post("/add_student")
+async def add_student(
+    reid_num: str = Form(...), 
+    student_name: str = Form(...),
+    student_id: str = Form(None)
+):
+    """Add an unknown face to the student database"""
+    try:
+        reid_num = int(reid_num)
+        
+        if not student_name.strip():
+            raise HTTPException(status_code=400, detail="Student name cannot be empty")
+        
+        # Update the name in the face recognition database
+        success = face_api.db_manager.update_name(reid_num, student_name)
+        
+        if success:
+            # Update in-memory mappings
+            for track_id, (name, rid) in face_api.known_faces.items():
+                if rid == reid_num:
+                    face_api.known_faces[track_id] = (student_name, reid_num)
+            
+            return JSONResponse(content={
+                "success": True,
+                "message": f"Successfully added {student_name} as ReID {reid_num}",
+                "reid_num": reid_num,
+                "name": student_name,
+                "student_id": student_id
+            })
+        else:
+            raise HTTPException(status_code=404, detail=f"ReID {reid_num} not found in database")
+            
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ReID number")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error adding student: {str(e)}")
+
+@app.get("/unknown_faces")
+async def get_unknown_faces():
+    """Get all unknown/unidentified faces that can be added as students"""
+    try:
+        unknown_faces = []
+        
+        # Get all faces from database
+        if hasattr(face_api.db_manager, 'reid_name_map') and face_api.db_manager.reid_name_map:
+            for key, name in face_api.db_manager.reid_name_map.items():
+                reid_num = key.split("_")[1] if "_" in key else key
+                
+                # Check if this is an "Unknown_" face that hasn't been assigned to a student
+                if name.startswith("Unknown_"):
+                    # Check if face image exists
+                    face_image_path = f"{face_api.face_img_path}/reid_{reid_num}.jpg"
+                    has_image = os.path.exists(face_image_path)
+                    
+                    unknown_faces.append({
+                        "reid_num": int(reid_num),
+                        "name": name,
+                        "has_image": has_image,
+                        "image_path": face_image_path if has_image else None
+                    })
+        
+        return JSONResponse(content={
+            "unknown_faces": unknown_faces,
+            "count": len(unknown_faces)
+        })
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting unknown faces: {str(e)}")
+
+@app.get("/face_image/{reid_num}")
+async def get_face_image(reid_num: int):
+    """Get the saved face image for a specific ReID number"""
+    try:
+        face_image_path = f"{face_api.face_img_path}/reid_{reid_num}.jpg"
+        
+        if not os.path.exists(face_image_path):
+            raise HTTPException(status_code=404, detail="Face image not found")
+        
+        # Read and encode image as base64
+        with open(face_image_path, "rb") as image_file:
+            image_data = image_file.read()
+            image_base64 = base64.b64encode(image_data).decode('utf-8')
+        
+        return JSONResponse(content={
+            "reid_num": reid_num,
+            "image": image_base64,
+            "image_path": face_image_path
+        })
+        
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Face image not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving face image: {str(e)}")
+
+@app.delete("/remove_face/{reid_num}")
+async def remove_face(reid_num: int):
+    """Remove a face from the database (for faces that shouldn't be added as students)"""
+    try:
+        # This would require implementing a delete method in your DatabaseManager
+        # For now, we'll just rename it to indicate it's been dismissed
+        current_name = f"Unknown_{reid_num}"
+        dismissed_name = f"Dismissed_{reid_num}"
+        
+        success = face_api.db_manager.update_name(reid_num, dismissed_name)
+        
+        if success:
+            # Update in-memory mappings
+            for track_id, (name, rid) in face_api.known_faces.items():
+                if rid == reid_num:
+                    face_api.known_faces[track_id] = (dismissed_name, reid_num)
+            
+            return JSONResponse(content={
+                "success": True,
+                "message": f"Face ReID {reid_num} has been dismissed"
+            })
+        else:
+            raise HTTPException(status_code=404, detail=f"ReID {reid_num} not found")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error removing face: {str(e)}")
+
+# Update the root endpoint to include new endpoints
 @app.get("/")
 async def root():
     """Root endpoint with API information"""
     return {
-        "message": "Enhanced Face Recognition API",
-        "version": "2.0",
+        "message": "Enhanced Face Recognition API with Student Management",
+        "version": "2.1",
         "endpoints": {
             "analyze_frame": "/analyze_frame (POST) - Main endpoint with combined functionality",
             "process_frame": "/process_frame (POST) - Legacy tracking endpoint",
             "headcount": "/headcount (POST) - Legacy headcount endpoint",
-            "rename": "/rename (POST)",
-            "status": "/status (GET)",
-            "faces": "/faces (GET)"
+            "rename": "/rename (POST) - Rename a person",
+            "add_student": "/add_student (POST) - Add unknown face as student",
+            "unknown_faces": "/unknown_faces (GET) - Get all unknown faces",
+            "face_image": "/face_image/{reid_num} (GET) - Get face image",
+            "remove_face": "/remove_face/{reid_num} (DELETE) - Dismiss unknown face",
+            "status": "/status (GET) - System status",
+            "faces": "/faces (GET) - All faces in database"
         },
         "features": [
             "Combined headcount and face recognition",
             "Optional tracking mode",
             "Detailed face information",
             "Real-time processing",
-            "Person database management"
+            "Person database management",
+            "Student roster management",
+            "Unknown face identification and addition"
         ]
     }
-
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
