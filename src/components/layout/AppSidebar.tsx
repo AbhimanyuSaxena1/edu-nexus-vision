@@ -75,16 +75,17 @@ export function AppSidebar() {
   const collapsed = state === 'collapsed';
 
   const getMenuItems = () => {
-    switch (profile?.role) {
-      case 'teacher':
-        return teacherItems;
-      case 'hod':
-      case 'admin':
-        return hodItems;
-      case 'student':
-      default:
-        return studentItems;
+    const role = profile?.role;
+    if (role === 'student') {
+      return studentItems;
     }
+    if (role === 'teacher') {
+      return teacherItems;
+    }
+    if (role === 'hod' || role === 'admin') {
+      return hodItems;
+    }
+    return studentItems; // Default to student
   };
 
   const menuItems = getMenuItems();
@@ -147,7 +148,7 @@ export function AppSidebar() {
           <div className="mt-auto p-4 border-t border-sidebar-border">
             <div className="flex items-center space-x-3">
               <div className="bg-accent text-accent-foreground p-2 rounded-full text-xs font-medium">
-                {profile?.full_name.split(' ').map(n => n[0]).join('').toUpperCase()}
+                {profile?.full_name?.split(' ').map(n => n[0]).join('').toUpperCase()}
               </div>
               <div className="flex-1">
                 <p className="text-sm font-medium text-sidebar-foreground">{profile?.full_name}</p>

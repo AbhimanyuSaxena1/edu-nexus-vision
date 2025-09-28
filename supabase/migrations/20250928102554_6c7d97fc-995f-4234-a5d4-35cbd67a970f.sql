@@ -159,52 +159,47 @@ CREATE POLICY "Users can view their own profile" ON public.profiles
 CREATE POLICY "Users can update their own profile" ON public.profiles
   FOR UPDATE USING (auth.uid() = user_id);
 
+-- Helper function to get the role of the current user
+CREATE OR REPLACE FUNCTION public.get_my_role()
+RETURNS user_role AS $$
+DECLARE
+  user_role_output user_role;
+BEGIN
+  SELECT role INTO user_role_output FROM public.profiles WHERE user_id = auth.uid();
+  RETURN user_role_output;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
+
+-- Helper function to get the profile id of the current user
+CREATE OR REPLACE FUNCTION public.get_my_profile_id()
+RETURNS UUID AS $$
+DECLARE
+  profile_id_output UUID;
+BEGIN
+  SELECT id INTO profile_id_output FROM public.profiles WHERE user_id = auth.uid();
+  RETURN profile_id_output;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
+
 CREATE POLICY "Teachers and HODs can view student profiles" ON public.profiles
   FOR SELECT USING (
-    EXISTS (
-      SELECT 1 FROM public.profiles p 
-      WHERE p.user_id = auth.uid() 
-      AND p.role IN ('teacher', 'hod', 'admin')
-    )
+    get_my_role() IN ('teacher', 'hod', 'admin')
   );
 
--- Create policies for courses
-CREATE POLICY "Students can view enrolled courses" ON public.courses
+-- Create policies for courses (moved to the next migration file)
+
+-- Policies for courses
+CREATE POLICY "HODs and Admins can manage all courses" ON "public"."courses"
   FOR SELECT USING (
     EXISTS (
-      SELECT 1 FROM public.enrollments e
-      JOIN public.classes c ON e.class_id = c.id
-      JOIN public.profiles p ON e.student_id = p.id
-      WHERE p.user_id = auth.uid() AND c.course_id = courses.id
-    )
-  );
-
-CREATE POLICY "Teachers can view their courses" ON public.courses
-  FOR SELECT USING (
-    EXISTS (
-      SELECT 1 FROM public.classes c
-      JOIN public.profiles p ON c.teacher_id = p.id
-      WHERE p.user_id = auth.uid() AND c.course_id = courses.id
-    )
-  );
-
-CREATE POLICY "HODs can manage department courses" ON public.courses
-  FOR ALL USING (
-    EXISTS (
-      SELECT 1 FROM public.profiles p 
-      WHERE p.user_id = auth.uid() 
-      AND p.role IN ('hod', 'admin')
-      AND (p.department = courses.department OR p.role = 'admin')
+      SELECT 1 FROM public.classes c WHERE c.teacher_id = get_my_profile_id() AND c.course_id = courses.id
     )
   );
 
 -- Create policies for attendance records
 CREATE POLICY "Students can view their attendance" ON public.attendance_records
   FOR SELECT USING (
-    EXISTS (
-      SELECT 1 FROM public.profiles p 
-      WHERE p.user_id = auth.uid() AND p.id = attendance_records.student_id
-    )
+    get_my_profile_id() = attendance_records.student_id
   );
 
 CREATE POLICY "Teachers can manage attendance for their classes" ON public.attendance_records
@@ -219,18 +214,12 @@ CREATE POLICY "Teachers can manage attendance for their classes" ON public.atten
 -- Create policies for notifications
 CREATE POLICY "Users can view their notifications" ON public.notifications
   FOR SELECT USING (
-    EXISTS (
-      SELECT 1 FROM public.profiles p 
-      WHERE p.user_id = auth.uid() AND p.id = notifications.user_id
-    )
+    get_my_profile_id() = notifications.user_id
   );
 
 CREATE POLICY "Users can update their notifications" ON public.notifications
   FOR UPDATE USING (
-    EXISTS (
-      SELECT 1 FROM public.profiles p 
-      WHERE p.user_id = auth.uid() AND p.id = notifications.user_id
-    )
+    get_my_profile_id() = notifications.user_id
   );
 
 -- Create function to update timestamps
@@ -281,14 +270,22 @@ CREATE TRIGGER update_face_recognition_data_updated_at
 -- Function to handle new user signup
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER AS $$
+DECLARE
+  user_role public.user_role;
 BEGIN
+  user_role := COALESCE((NEW.raw_user_meta_data ->> 'role')::public.user_role, 'student'::public.user_role);
+
   INSERT INTO public.profiles (user_id, email, full_name, role)
   VALUES (
     NEW.id, 
     NEW.email, 
     COALESCE(NEW.raw_user_meta_data ->> 'full_name', NEW.email),
-    COALESCE((NEW.raw_user_meta_data ->> 'role')::user_role, 'student'::user_role)
+    user_role
   );
+
+  -- Update the user's metadata in auth.users
+  UPDATE auth.users SET raw_user_meta_data = raw_user_meta_data || jsonb_build_object('role', user_role) WHERE id = NEW.id;
+
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;

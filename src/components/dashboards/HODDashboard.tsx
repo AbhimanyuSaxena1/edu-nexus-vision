@@ -3,6 +3,7 @@ import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Users, GraduationCap, BookOpen, TrendingUp, Calendar, Building, AlertCircle, Settings } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 export function HODDashboard() {
   return (
@@ -230,10 +231,12 @@ export function HODDashboard() {
               <Badge variant="secondary">Active</Badge>
             </div>
             
-            <Button variant="outline" className="w-full">
-              <Users className="mr-2 h-4 w-4" />
-              Manage All Faculty
-            </Button>
+            <Link to="/faculty" className="w-full">
+              <Button variant="outline" className="w-full">
+                <Users className="mr-2 h-4 w-4" />
+                Manage All Faculty
+              </Button>
+            </Link>
           </CardContent>
         </Card>
 

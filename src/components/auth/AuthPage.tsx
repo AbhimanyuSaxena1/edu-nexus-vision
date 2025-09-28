@@ -82,8 +82,10 @@ export function AuthPage() {
         validatedData.email,
         validatedData.password,
         {
-          full_name: validatedData.fullName,
-          role: validatedData.role,
+          data: {
+            full_name: validatedData.fullName,
+            role: validatedData.role,
+          }
         }
       );
       
