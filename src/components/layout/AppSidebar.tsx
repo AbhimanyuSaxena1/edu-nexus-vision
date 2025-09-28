@@ -37,6 +37,7 @@ const studentItems = [
   { title: 'Attendance', url: '/attendance', icon: UserCheck },
   { title: 'Quizzes', url: '/quizzes', icon: ClipboardList },
   { title: 'Timetable', url: '/timetable', icon: Calendar },
+  { title: 'Smart Courses', url: '/smart-courses', icon: Lightbulb },
   { title: 'AI Tutor', url: '/ai-tutor', icon: Brain },
   { title: 'Team Finder', url: '/team-finder', icon: Users },
   { title: 'Certifications', url: '/certifications', icon: Award },

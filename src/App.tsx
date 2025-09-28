@@ -31,6 +31,8 @@ import AttendanceMonitor from "./pages/AttendanceMonitor";
 import QuizManagement from "./pages/QuizManagement";
 import CourseContent from "./pages/CourseContent";
 import AnalyticsPage from "./pages/AnalyticsPage";
+import ProfileSettingsPage from "./ProfileSettingsPage";
+import SmartCoursesPage from "./components/dashboards/SmartCoursesPage";
 
 const queryClient = new QueryClient();
 
@@ -51,6 +53,7 @@ const App = () => (
               <Route path="/quizzes" element={<AppLayout><QuizzesPage /></AppLayout>} />
               <Route path="/timetable" element={<AppLayout><TimetablePage /></AppLayout>} />
               <Route path="/ai-tutor" element={<AppLayout><AITutorPage /></AppLayout>} />
+              <Route path="/smart-courses" element={<AppLayout><SmartCoursesPage /></AppLayout>} />
               <Route path="/team-finder" element={<AppLayout><TeamFinderPage /></AppLayout>} />
               <Route path="/certifications" element={<AppLayout><CertificationsPage /></AppLayout>} />
               <Route path="/notifications" element={<AppLayout><NotificationsPage /></AppLayout>} />
@@ -60,6 +63,7 @@ const App = () => (
               <Route path="/quiz-management" element={<AppLayout><QuizManagement /></AppLayout>} />
               <Route path="/course-content" element={<AppLayout><CourseContent /></AppLayout>} />
               <Route path="/analytics" element={<AppLayout><AnalyticsPage /></AppLayout>} />
+              <Route path="/profile-settings" element={<AppLayout><ProfileSettingsPage /></AppLayout>} />
               <Route path="/department" element={<AppLayout><DepartmentOverview /></AppLayout>} />
               <Route path="/faculty" element={<AppLayout><FacultyManagement /></AppLayout>} />
               <Route path="/course-management" element={<AppLayout><CourseManagement /></AppLayout>} />

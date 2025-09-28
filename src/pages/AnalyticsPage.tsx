@@ -1,11 +1,26 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { BarChart, TrendingUp, Users, ClipboardCheck } from 'lucide-react';
+import { TrendingUp, Users, ClipboardCheck, TrendingDown } from 'lucide-react';
+import { Progress } from '@/components/ui/progress';
 
 const kpis = [
   { title: 'Average Quiz Score', value: '82%', change: '+5% this month', icon: ClipboardCheck },
   { title: 'Top Performing Class', value: 'Data Structures', change: '88% avg. score', icon: TrendingUp },
   { title: 'Most Engaged Students', value: '15', change: '>95% attendance & quiz scores', icon: Users },
-  { title: 'Lowest Attendance', value: 'Algorithms', change: '85% avg. attendance', icon: TrendingUp },
+  { title: 'Lowest Attendance', value: 'Algorithms', change: '85% avg. attendance', icon: TrendingDown },
+];
+
+const quizScoreData = [
+  { name: 'Data Structures', score: 88 },
+  { name: 'Algorithms', score: 76 },
+  { name: 'Operating Systems', score: 82 },
+  { name: 'Machine Learning', score: 91 },
+];
+
+const attendanceData = [
+  { name: 'Data Structures', attendance: 95 },
+  { name: 'Algorithms', attendance: 85 },
+  { name: 'Operating Systems', attendance: 92 },
+  { name: 'Machine Learning', attendance: 98 },
 ];
 
 export default function AnalyticsPage() {
@@ -35,19 +50,33 @@ export default function AnalyticsPage() {
             <CardTitle>Quiz Score Distribution</CardTitle>
             <CardDescription>Average scores across your classes.</CardDescription>
           </CardHeader>
-          <CardContent className="h-64 flex items-center justify-center text-muted-foreground">
-            <BarChart className="h-12 w-12 mb-2" />
-            <p>Chart coming soon...</p>
+          <CardContent className="space-y-4">
+            {quizScoreData.map((classData) => (
+              <div key={classData.name}>
+                <div className="flex justify-between text-sm mb-1">
+                  <span>{classData.name}</span>
+                  <span className="font-semibold">{classData.score}%</span>
+                </div>
+                <Progress value={classData.score} />
+              </div>
+            ))}
           </CardContent>
         </Card>
         <Card>
           <CardHeader>
             <CardTitle>Attendance Trends</CardTitle>
-            <CardDescription>Weekly attendance trends for all classes.</CardDescription>
+            <CardDescription>Average attendance for all classes.</CardDescription>
           </CardHeader>
-          <CardContent className="h-64 flex items-center justify-center text-muted-foreground">
-            <TrendingUp className="h-12 w-12 mb-2" />
-            <p>Chart coming soon...</p>
+          <CardContent className="space-y-4">
+            {attendanceData.map((classData) => (
+              <div key={classData.name}>
+                <div className="flex justify-between text-sm mb-1">
+                  <span>{classData.name}</span>
+                  <span className="font-semibold">{classData.attendance}%</span>
+                </div>
+                <Progress value={classData.attendance} className="[&>*]:bg-green-500" />
+              </div>
+            ))}
           </CardContent>
         </Card>
       </div>
