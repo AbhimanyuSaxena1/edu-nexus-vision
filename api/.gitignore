@@ -4,3 +4,4 @@ face_data_db/
 venv/
 yolov12l-face.pt
 /saved_faces
+.env
