@@ -273,52 +273,57 @@ export default function EnhancedLiveClassroom() {
   };
 
   // CAMERA START FUNCTION - FIXED LOGIC AND ADDED ROBUST ERROR HANDLING
-  const startCamera = async () => {
-    if (isCameraOn) return;
+  // --- inside startCamera function ---
+const startCamera = async () => {
+  if (isCameraOn) return;
 
-    try {
-      const mediaStream = await navigator.mediaDevices.getUserMedia({ 
-        video: { 
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
-        } 
-      });
+  try {
+    const mediaStream = await navigator.mediaDevices.getUserMedia({ 
+      video: { 
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      } 
+    });
 
-      setStream(mediaStream);
-      
-      // CRITICAL: Attach the stream to the video element and start playing
-      if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream;
-        await videoRef.current.play(); 
-      }
-
-      setIsCameraOn(true);
-      setSessionStats(prev => ({ ...prev, startTime: new Date() }));
-      setError(null);
-      
-      await fetchUnknownFaces();
-      
-    } catch (err) {
-      const errorObject = err as MediaStreamError | Error;
-      const errorMessage = errorObject instanceof Error ? errorObject.message : (errorObject as MediaStreamError).name || String(err);
-      
-      console.error("CAMERA ACCESS FAILED:", err);
-
-      let userMessage = `Error accessing camera: ${errorMessage}. Check console for details.`;
-      
-      if (errorMessage.includes("NotAllowedError") || errorMessage.includes("PermissionDeniedError")) {
-          userMessage = "Camera access was **DENIED**. Please click the camera/lock icon in the address bar and allow access, or check your OS privacy settings.";
-      } else if (errorMessage.includes("NotFoundError") || errorMessage.includes("DevicesNotFoundError")) {
-          userMessage = "No camera found. Please ensure your **webcam is connected and not blocked**.";
-      } else if (errorMessage.includes("NotReadableError") || errorMessage.includes("TrackStartError")) {
-          userMessage = "Camera is **BUSY**. Please close other applications (Zoom, Skype, other tabs) and try again.";
-      }
-
-      setError(userMessage);
-      setIsCameraOn(false);
-      setStream(null);
+    setStream(mediaStream);
+    
+    if (videoRef.current) {
+      videoRef.current.srcObject = mediaStream;
+      await videoRef.current.play(); 
     }
-  };
+
+    setIsCameraOn(true);
+    setSessionStats(prev => ({ ...prev, startTime: new Date() }));
+    setError(null);
+    
+    await fetchUnknownFaces();
+
+    // 🔥 AUTO START continuous analysis right away
+    setContinuousAnalysis(true);
+    window.setTimeout(processFramesContinuously, 0);
+
+  } catch (err) {
+    const errorObject = err as MediaStreamError | Error;
+    const errorMessage = errorObject instanceof Error ? errorObject.message : (errorObject as MediaStreamError).name || String(err);
+
+    console.error("CAMERA ACCESS FAILED:", err);
+
+    let userMessage = `Error accessing camera: ${errorMessage}. Check console for details.`;
+    
+    if (errorMessage.includes("NotAllowedError") || errorMessage.includes("PermissionDeniedError")) {
+        userMessage = "Camera access was **DENIED**. Please allow access in browser/OS settings.";
+    } else if (errorMessage.includes("NotFoundError") || errorMessage.includes("DevicesNotFoundError")) {
+        userMessage = "No camera found. Please ensure your **webcam is connected and not blocked**.";
+    } else if (errorMessage.includes("NotReadableError") || errorMessage.includes("TrackStartError")) {
+        userMessage = "Camera is **BUSY**. Please close other apps (Zoom, Skype, etc.) and try again.";
+    }
+
+    setError(userMessage);
+    setIsCameraOn(false);
+    setStream(null);
+  }
+};
+
 
   const stopCamera = () => {
     if (stream) {
@@ -503,14 +508,15 @@ export default function EnhancedLiveClassroom() {
                         Analyze Frame
                       </Button>
                       <Button 
-                        size="sm" 
-                        onClick={toggleContinuousAnalysis}
-                        variant={continuousAnalysis ? 'default' : 'outline'}
-                        disabled={isAnalyzing}
-                      >
-                        {continuousAnalysis ? <Pause className="mr-2 h-4 w-4" /> : <Play className="mr-2 h-4 w-4" />}
-                        {continuousAnalysis ? 'Stop Auto' : 'Start Auto'}
-                      </Button>
+  size="sm" 
+  onClick={toggleContinuousAnalysis}
+  variant={continuousAnalysis ? 'default' : 'outline'}
+  disabled={!isCameraOn || isAnalyzing}
+>
+  {continuousAnalysis ? <Pause className="mr-2 h-4 w-4" /> : <Play className="mr-2 h-4 w-4" />}
+  {continuousAnalysis ? 'Stop Auto' : 'Start Auto'}
+</Button>
+
                     </>
                   )}
                 </div>

@@ -43,7 +43,7 @@ class DatabaseManager:
         except Exception as e:
             print(f"Loading existing failed: {e}")
 
-    def query(self, embedding, threshold: float = 0.3):
+    def query(self, embedding, threshold: float = 0.25):
         """Query database for matching face."""
         try:
             with self._lock:
