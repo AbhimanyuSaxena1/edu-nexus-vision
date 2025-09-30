@@ -9,15 +9,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Video, VideoOff, Check, X, Camera, Users, AlertTriangle, Clock, UserCheck, UserX, Play, Pause, UserPlus, Eye, Trash2, Plus } from 'lucide-react';
-import { useState, useRef, useEffect } from 'react';
-
-// Sample student roster for comparison
-const initialStudentRoster = [
-  { id: 1, name: 'Adil Sharma', status: 'Absent', lastSeen: null, confidence: 0 },
-  { id: 2, name: 'Bhushan Kumar', status: 'Absent', lastSeen: null, confidence: 0 },
-  { id: 3, name: 'Mohan Yadav', status: 'Absent', lastSeen: null, confidence: 0 },
-];
+import { Video, VideoOff, Check, X, Camera, Users, AlertTriangle, Clock, UserCheck, UserX, Play, Pause, UserPlus, Eye, Trash2, Plus, Upload } from 'lucide-react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 
 export default function EnhancedLiveClassroom() {
   // Camera and video states
@@ -26,12 +19,12 @@ export default function EnhancedLiveClassroom() {
   const [isCameraOn, setIsCameraOn] = useState(false);
   const [stream, setStream] = useState<MediaStream | null>(null);
   
-  // Face recognition states
+  // API and analysis states
   const [apiUrl] = useState('http://localhost:8000');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [continuousAnalysis, setContinuousAnalysis] = useState(false);
   const [analysisData, setAnalysisData] = useState<any>(null);
-  const [students, setStudents] = useState<Student[]>(initialStudentRoster);
+  const [students, setStudents] = useState<any[]>([]); // Initial state is an empty array
   const [processedImage, setProcessedImage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sessionStats, setSessionStats] = useState<{
@@ -44,6 +37,9 @@ export default function EnhancedLiveClassroom() {
     startTime: null
   });
 
+  const websocketRef = useRef<WebSocket | null>(null);
+  const analysisIntervalRef = useRef<number>(0);
+
   // Unknown faces management states
   const [unknownFaces, setUnknownFaces] = useState<any[]>([]);
   const [showUnknownDialog, setShowUnknownDialog] = useState(false);
@@ -53,56 +49,126 @@ export default function EnhancedLiveClassroom() {
   const [isAddingStudent, setIsAddingStudent] = useState(false);
   const [faceImages, setFaceImages] = useState<{[key: number]: string}>({});
   
-  const animationRef = useRef<number>(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // API Functions
-  const analyzeFrame = async (imageBlob: Blob) => {
+  // Fetches the initial student roster from the backend
+  const fetchRoster = async () => {
+    try {
+      const response = await fetch(`${apiUrl}/roster`);
+      if (!response.ok) {
+        throw new Error('Failed to fetch roster');
+      }
+      const data = await response.json();
+      // Map the backend data to the format your component expects
+      const formattedRoster = data.roster.map((student: any) => ({
+        id: student.reid_num, // Use reid_num as the unique ID
+        name: student.name,
+        status: 'Absent' as const,
+        lastSeen: null,
+        confidence: 0
+      }));
+      setStudents(formattedRoster);
+    } catch (err) {
+      console.error("Error fetching student roster:", err);
+      setError(err instanceof Error ? err.message : "Could not load student roster from the server.");
+    }
+  };
+  
+  // On component mount, fetch the student roster
+  useEffect(() => {
+    fetchRoster();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const updateAttendance = useCallback((detectedNames: string[], faceInfo: any[]) => {
+    setStudents(currentStudents => {
+        const lowerCaseDetectedSet = new Set(detectedNames.map(name => name.toLowerCase()));
+        
+        const nextStudents = currentStudents.map(student => {
+            const isDetected = lowerCaseDetectedSet.has(student.name.toLowerCase());
+            if (isDetected) {
+                const matchingFace = faceInfo.find(face => face.name.toLowerCase() === student.name.toLowerCase());
+                return {
+                    ...student,
+                    status: 'Present' as const,
+                    lastSeen: new Date(),
+                    confidence: matchingFace ? Math.round(matchingFace.confidence * 100) : 0
+                };
+            } else if (student.status === 'Present') {
+                // If a student was present but is no longer detected, mark them absent
+                // but keep their 'lastSeen' time.
+                return { ...student, status: 'Absent' as const, confidence: 0 };
+            }
+            return student; // No change for already absent students
+        });
+
+        // This part handles newly identified people who aren't on the roster yet.
+        const enrolledNames = new Set(currentStudents.map(s => s.name.toLowerCase()));
+        for (const detectedName of detectedNames) {
+            const lowerDetectedName = detectedName.toLowerCase();
+            if (lowerDetectedName && !lowerDetectedName.startsWith('unknown_') && !lowerDetectedName.includes('processing') && !enrolledNames.has(lowerDetectedName)) {
+                const matchingFace = faceInfo.find(face => face.name === detectedName);
+                if (matchingFace) {
+                    const newStudent: any = {
+                        id: matchingFace.reid_num, // Use the reid_num from the backend
+                        name: detectedName,
+                        status: 'Present',
+                        lastSeen: new Date(),
+                        confidence: matchingFace ? Math.round(matchingFace.confidence * 100) : 0,
+                    };
+                    nextStudents.push(newStudent);
+                    enrolledNames.add(lowerDetectedName);
+                }
+            }
+        }
+        return nextStudents;
+    });
+  }, []);
+
+  const handleAnalysisResponse = useCallback((data: any) => {
+    setAnalysisData({
+      headCount: data.head_count,
+      names: data.names,
+      faceInfo: data.face_info,
+      trackingEnabled: data.tracking_enabled,
+      message: data.message,
+      timestamp: new Date()
+    });
+    
+    if (data.image) {
+      setProcessedImage(`data:image/jpeg;base64,${data.image}`);
+    }
+    
+    updateAttendance(data.names || [], data.face_info || []);
+    
+    setSessionStats(prev => ({
+      ...prev,
+      totalDetections: prev.totalDetections + (data.head_count || 0),
+      uniqueFaces: new Set([...prev.uniqueFaces, ...(data.names || []).filter((name: string) => name && !name.toLowerCase().startsWith('unknown_') && !name.includes('Processing'))])
+    }));
+
+    // Periodically check for new unknown faces
+    if (data.names?.some((name: string) => name.toLowerCase().startsWith('unknown_'))) {
+        fetchUnknownFaces();
+    }
+  }, [updateAttendance]);
+
+  const analyzeFrameHttp = async (imageBlob: Blob) => {
     setIsAnalyzing(true);
     try {
       const formData = new FormData();
       formData.append('file', imageBlob, 'frame.jpg');
       formData.append('use_tracking', 'true');
       
-      const response = await fetch(`${apiUrl}/analyze_frame`, {
-        method: 'POST',
-        body: formData,
-      });
+      const response = await fetch(`${apiUrl}/analyze_frame`, { method: 'POST', body: formData });
       
-      if (!response.ok) throw new Error('Failed to analyze frame');
+      if (!response.ok) throw new Error(`Server responded with ${response.status}`);
       const data = await response.json();
       
-      // Update analysis data
-      setAnalysisData({
-        headCount: data.head_count,
-        names: data.names,
-        faceInfo: data.face_info,
-        trackingEnabled: data.tracking_enabled,
-        message: data.message,
-        timestamp: new Date()
-      });
+      handleAnalysisResponse(data);
       
-      // Set processed image
-      if (data.image) {
-        setProcessedImage(`data:image/jpeg;base64,${data.image}`);
-      }
-      
-      // Update student attendance based on detected names (includes dynamic addition)
-      updateAttendance(data.names || [], data.face_info || []);
-      
-      // Update session stats
-      setSessionStats(prev => ({
-        ...prev,
-        totalDetections: prev.totalDetections + (data.head_count || 0),
-        uniqueFaces: new Set([...prev.uniqueFaces, ...(data.names || []).filter((name: string) => name && name !== 'Unknown' && !name.includes('Processing'))])
-      }));
-      
-      // Check for unknown faces and update the list
-      await fetchUnknownFaces();
-      
-      return { success: true, data };
     } catch (err) {
       setError(`Error analyzing frame: ${err instanceof Error ? err.message : String(err)}`);
-      return { success: false, error: err };
     } finally {
       setIsAnalyzing(false);
     }
@@ -131,10 +197,7 @@ export default function EnhancedLiveClassroom() {
       const response = await fetch(`${apiUrl}/face_image/${reidNum}`);
       if (response.ok) {
         const data = await response.json();
-        setFaceImages(prev => ({
-          ...prev,
-          [reidNum]: `data:image/jpeg;base64,${data.image}`
-        }));
+        setFaceImages(prev => ({ ...prev, [reidNum]: `data:image/jpeg;base64,${data.image}` }));
       }
     } catch (err) {
       console.error(`Error fetching face image for ReID ${reidNum}:`, err);
@@ -143,45 +206,39 @@ export default function EnhancedLiveClassroom() {
 
   const addStudentFromUnknown = async () => {
     if (!selectedUnknownFace || !newStudentName.trim()) return;
-    
     setIsAddingStudent(true);
     try {
       const formData = new FormData();
       formData.append('reid_num', selectedUnknownFace.reid_num.toString());
       formData.append('student_name', newStudentName.trim());
-      if (newStudentId.trim()) {
-        formData.append('student_id', newStudentId.trim());
-      }
       
-      const response = await fetch(`${apiUrl}/add_student`, {
-        method: 'POST',
-        body: formData,
-      });
+      const response = await fetch(`${apiUrl}/add_student`, { method: 'POST', body: formData });
       
       if (response.ok) {
-        let maxId = students.length > 0 ? Math.max(...students.map(s => s.id)) : 0;
-        
-        const newStudent: Student = {
-          id: maxId + 1, 
-          name: newStudentName.trim(),
-          status: 'Present',
-          lastSeen: new Date(),
-          confidence: 100
+        // Create the new student object for immediate UI update
+        const newStudent = { 
+          id: selectedUnknownFace.reid_num, // Use the correct reid_num
+          name: newStudentName.trim(), 
+          status: 'Present' as const, // Assume they are present since they were just detected
+          lastSeen: new Date(), 
+          confidence: 100 
         };
         
+        // Add the new student to the existing roster state
         setStudents(prev => [...prev, newStudent]);
         
+        // Close dialog and clean up
         setShowUnknownDialog(false);
         setSelectedUnknownFace(null);
         setNewStudentName('');
-        setNewStudentId('');
+        setNewStudentId(''); // Note: student ID is not used by the backend yet
         
+        // Refresh the list of unknown faces from the server
         await fetchUnknownFaces();
-        
         setError(null);
-        
       } else {
-        throw new Error('Failed to add student');
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to add student');
       }
     } catch (err) {
       setError(`Error adding student: ${err instanceof Error ? err.message : String(err)}`);
@@ -192,128 +249,35 @@ export default function EnhancedLiveClassroom() {
 
   const dismissUnknownFace = async (reidNum: number) => {
     try {
-      const response = await fetch(`${apiUrl}/remove_face/${reidNum}`, {
-        method: 'DELETE',
-      });
-      
-      if (response.ok) {
-        await fetchUnknownFaces();
-      }
+      const response = await fetch(`${apiUrl}/remove_face/${reidNum}`, { method: 'DELETE' });
+      if (response.ok) await fetchUnknownFaces();
     } catch (err) {
       setError(`Error dismissing face: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
-  /**
-   * REVISED: 
-   * 1. Marks detected students as 'Present'.
-   * 2. Marks NON-detected (but already enrolled) students as 'Absent'.
-   * 3. Dynamically adds (enrolls) new recognized faces to the list.
-   */
-  const updateAttendance = (detectedNames: string[], faceInfo: any[]) => {
-    // Standardized set of detected names (lowercase) for quick lookup
-    const lowerCaseDetectedSet = new Set(detectedNames.map(name => name.toLowerCase()));
-    let maxId = students.length > 0 ? Math.max(...students.map(s => s.id)) : 0;
-
-    const nextStudents = students.map(student => {
-      const lowerCaseStudentName = student.name.toLowerCase();
-      
-      // Check if the student's name is in the detected set
-      const isDetected = lowerCaseDetectedSet.has(lowerCaseStudentName);
-
-      if (isDetected) {
-        // --- STUDENT IS PRESENT ---
-        const matchingFace = faceInfo.find(face => face.name.toLowerCase() === lowerCaseStudentName);
-
-        return {
-          ...student,
-          status: 'Present' as const,
-          lastSeen: new Date(),
-          confidence: matchingFace ? Math.round(matchingFace.confidence * 100) : 0
-        };
-      } else {
-        // --- STUDENT IS ABSENT (The core new requirement) ---
-        // If they were not detected, explicitly mark them as Absent.
-        return {
-            ...student,
-            status: 'Absent' as const,
-            confidence: 0, // Reset confidence when absent
-            // Do not reset lastSeen here, so you know WHEN they were last present
-        };
-      }
-    });
-    
-    // --- DYNAMIC ENROLLMENT ---
-    // Add any detected names that are not already in the students list
-    const enrolledNames = new Set(students.map(s => s.name.toLowerCase()));
-    
-    for (const detectedName of detectedNames) {
-        const lowerDetectedName = detectedName.toLowerCase();
-        
-        // Skip 'Unknown' or 'Processing' or already enrolled students
-        if (lowerDetectedName && lowerDetectedName !== 'unknown' && !lowerDetectedName.includes('processing') && !enrolledNames.has(lowerDetectedName)) {
-            
-            maxId++;
-            const matchingFace = faceInfo.find(face => face.name === detectedName);
-            const confidence = matchingFace ? Math.round(matchingFace.confidence * 100) : 0;
-
-            const newStudent: Student = {
-                id: maxId,
-                name: detectedName,
-                status: 'Present',
-                lastSeen: new Date(),
-                confidence: confidence,
-            };
-            nextStudents.push(newStudent);
-            enrolledNames.add(lowerDetectedName); // Add to the enrolled set to prevent duplicates in this loop
-        }
-    }
-
-    setStudents(nextStudents);
-  };
-
-  // CAMERA START FUNCTION - FIXED LOGIC AND ADDED ROBUST ERROR HANDLING
   const startCamera = async () => {
     if (isCameraOn) return;
-
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({ 
-        video: { 
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
-        } 
+        video: { width: { ideal: 1280 }, height: { ideal: 720 } } 
       });
-
       setStream(mediaStream);
-      
-      // CRITICAL: Attach the stream to the video element and start playing
-      if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream;
-        await videoRef.current.play(); 
-      }
-
       setIsCameraOn(true);
       setSessionStats(prev => ({ ...prev, startTime: new Date() }));
       setError(null);
-      
       await fetchUnknownFaces();
-      
     } catch (err) {
-      const errorObject = err as MediaStreamError | Error;
-      const errorMessage = errorObject instanceof Error ? errorObject.message : (errorObject as MediaStreamError).name || String(err);
-      
-      console.error("CAMERA ACCESS FAILED:", err);
-
+      const errorObject = err as any | Error;
+      const errorMessage = errorObject instanceof Error ? errorObject.message : (errorObject as any).name || String(err);
       let userMessage = `Error accessing camera: ${errorMessage}. Check console for details.`;
-      
-      if (errorMessage.includes("NotAllowedError") || errorMessage.includes("PermissionDeniedError")) {
-          userMessage = "Camera access was **DENIED**. Please click the camera/lock icon in the address bar and allow access, or check your OS privacy settings.";
-      } else if (errorMessage.includes("NotFoundError") || errorMessage.includes("DevicesNotFoundError")) {
-          userMessage = "No camera found. Please ensure your **webcam is connected and not blocked**.";
-      } else if (errorMessage.includes("NotReadableError") || errorMessage.includes("TrackStartError")) {
-          userMessage = "Camera is **BUSY**. Please close other applications (Zoom, Skype, other tabs) and try again.";
+      if (errorMessage.includes("NotAllowedError")) {
+          userMessage = "Camera access was DENIED. Please allow access in your browser and try again.";
+      } else if (errorMessage.includes("NotFoundError")) {
+          userMessage = "No camera found. Please ensure your webcam is connected.";
+      } else if (errorMessage.includes("NotReadableError")) {
+          userMessage = "Camera is BUSY. Please close other applications using it.";
       }
-
       setError(userMessage);
       setIsCameraOn(false);
       setStream(null);
@@ -321,100 +285,117 @@ export default function EnhancedLiveClassroom() {
   };
 
   const stopCamera = () => {
-    if (stream) {
-      stream.getTracks().forEach(track => track.stop());
-      setStream(null);
-      setIsCameraOn(false);
-      setContinuousAnalysis(false);
-      clearTimeout(animationRef.current);
-    }
+    if (stream) stream.getTracks().forEach(track => track.stop());
+    if (websocketRef.current) websocketRef.current.close();
+    setStream(null);
+    setIsCameraOn(false);
+    setContinuousAnalysis(false);
+    clearInterval(analysisIntervalRef.current);
+    websocketRef.current = null;
   };
 
-  // Frame capture and analysis
   const captureFrame = (): Promise<Blob | null> => {
     return new Promise((resolve) => {
-      if (!videoRef.current || !canvasRef.current) {
-        resolve(null);
-        return;
-      }
-      
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
+      if (!videoRef.current || !canvasRef.current || videoRef.current.paused || videoRef.current.ended) return resolve(null);
+      const { video, canvas } = { video: videoRef.current, canvas: canvasRef.current };
       const ctx = canvas.getContext('2d');
-      
-      if (!ctx) {
-        resolve(null);
-        return;
-      }
-      
+      if (!ctx) return resolve(null);
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      
       canvas.toBlob((blob) => resolve(blob), 'image/jpeg', 0.8);
     });
   };
 
   const analyzeSingleFrame = async () => {
     const blob = await captureFrame();
-    if (blob) {
-      await analyzeFrame(blob);
-    }
+    if (blob) await analyzeFrameHttp(blob);
   };
-
-  const processFramesContinuously = () => {
-    if (!isCameraOn || isAnalyzing || !continuousAnalysis) {
-        clearTimeout(animationRef.current);
-        return;
-    }
-    
-    const analyze = async () => {
-        const blob = await captureFrame();
-        if (blob) {
-            await analyzeFrame(blob);
-        }
-
-        if (continuousAnalysis && isCameraOn) {
-            animationRef.current = window.setTimeout(analyze, 2000);
-        }
-    }
-    
-    animationRef.current = window.setTimeout(analyze, 2000);
+  
+  const sendFrameViaWebSocket = async () => {
+      if (websocketRef.current?.readyState !== WebSocket.OPEN) return;
+      const blob = await captureFrame();
+      if (blob) {
+          const reader = new FileReader();
+          reader.readAsDataURL(blob);
+          reader.onloadend = () => {
+              const base64data = reader.result as string;
+              const imageData = base64data.split(',')[1];
+              const payload = { image: imageData, use_tracking: true };
+              websocketRef.current?.send(JSON.stringify(payload));
+          };
+      }
   };
 
   const toggleContinuousAnalysis = () => {
     setContinuousAnalysis(prev => {
         if (prev) {
-            clearTimeout(animationRef.current);
+            clearInterval(analysisIntervalRef.current);
+            if (websocketRef.current) {
+                websocketRef.current.close();
+                websocketRef.current = null;
+            }
             return false;
         } else {
             if (isCameraOn) {
-                window.setTimeout(processFramesContinuously, 0); 
+                const ws = new WebSocket(`ws://${window.location.hostname}:8000/ws/analyze`);
+                websocketRef.current = ws;
+                ws.onopen = () => {
+                    console.log("WebSocket connection established.");
+                    setError(null);
+                    analysisIntervalRef.current = window.setInterval(sendFrameViaWebSocket, 2000);
+                };
+                ws.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    if (data.error) {
+                        setError(`Server error: ${data.error}`);
+                        return;
+                    }
+                    handleAnalysisResponse(data);
+                };
+                ws.onerror = () => {
+                    setError("WebSocket connection error. See console.");
+                    setContinuousAnalysis(false);
+                    clearInterval(analysisIntervalRef.current);
+                };
+                ws.onclose = () => {
+                    console.log("WebSocket connection closed.");
+                    setContinuousAnalysis(false);
+                    clearInterval(analysisIntervalRef.current);
+                };
             }
             return true;
         }
     });
   };
 
-  // HYBRID FIX: useEffect to handle attachment/reattachment when stream or ref is ready
   useEffect(() => {
     if (isCameraOn && videoRef.current && stream) {
       videoRef.current.srcObject = stream;
       videoRef.current.play().catch(e => console.error("Error playing video stream:", e));
     }
-    
-    return () => {
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
-      }
-      clearTimeout(animationRef.current);
-    };
   }, [isCameraOn, stream]);
 
-  // Calculate attendance stats
+  useEffect(() => {
+    return () => {
+      stopCamera();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const presentStudents = students.filter(s => s.status === 'Present').length;
   const totalStudents = students.length;
   const attendanceRate = totalStudents > 0 ? Math.round((presentStudents / totalStudents) * 100) : 0;
+
+  const handleImageUploadChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+        await analyzeFrameHttp(file);
+    }
+    if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+    }
+  };
 
   return (
     <div className="container mx-auto p-6 space-y-6">
@@ -423,7 +404,7 @@ export default function EnhancedLiveClassroom() {
         <div>
           <h1 className="text-3xl font-bold">Enhanced Live Classroom</h1>
           <p className="text-muted-foreground">
-            AI-powered attendance tracking with student management • {totalStudents} total students
+            AI-powered attendance tracking with student management • {students.length} total students
           </p>
         </div>
         <div className="flex space-x-2">
@@ -446,41 +427,41 @@ export default function EnhancedLiveClassroom() {
           )}
         </div>
       </div>
-
+      
       {/* Error Display */}
       {error && (
-        <Alert variant="destructive">
-          <AlertTriangle className="h-4 w-4" />
-          <AlertDescription>
-            {error}
-            <Button 
-              variant="ghost" 
-              size="sm" 
-              onClick={() => setError(null)}
-              className="ml-2"
-            >
-              Dismiss
-            </Button>
-          </AlertDescription>
-        </Alert>
+          <Alert variant="destructive">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertDescription>
+                  {error}
+                  <Button 
+                    variant="ghost" 
+                    size="sm" 
+                    onClick={() => setError(null)}
+                    className="ml-2"
+                  >
+                    Dismiss
+                  </Button>
+              </AlertDescription>
+          </Alert>
       )}
-
+      
       {/* Unknown Faces Alert */}
-      {unknownFaces.length > 0 && (
-        <Alert>
-          <UserPlus className="h-4 w-4" />
-          <AlertDescription>
-            {unknownFaces.length} unknown face(s) detected that can be added as students.
-            <Button 
-              variant="outline" 
-              size="sm" 
-              onClick={() => setShowUnknownDialog(true)}
-              className="ml-2"
-            >
-              Review
-            </Button>
-          </AlertDescription>
-        </Alert>
+      {unknownFaces.length > 0 && !showUnknownDialog && (
+          <Alert>
+            <UserPlus className="h-4 w-4" />
+            <AlertDescription>
+              {unknownFaces.length} unknown face(s) detected that can be added as students.
+              <Button 
+                variant="outline" 
+                size="sm" 
+                onClick={() => setShowUnknownDialog(true)}
+                className="ml-2"
+              >
+                Review
+              </Button>
+            </AlertDescription>
+          </Alert>
       )}
 
       {/* Main Content */}
@@ -498,7 +479,11 @@ export default function EnhancedLiveClassroom() {
                 <div className="flex space-x-2">
                   {isCameraOn && (
                     <>
-                      <Button size="sm" onClick={analyzeSingleFrame} disabled={isAnalyzing}>
+                      <Button 
+                        size="sm" 
+                        onClick={analyzeSingleFrame} 
+                        disabled={isAnalyzing || continuousAnalysis}
+                      >
                         <Camera className="mr-2 h-4 w-4" />
                         Analyze Frame
                       </Button>
@@ -510,6 +495,15 @@ export default function EnhancedLiveClassroom() {
                       >
                         {continuousAnalysis ? <Pause className="mr-2 h-4 w-4" /> : <Play className="mr-2 h-4 w-4" />}
                         {continuousAnalysis ? 'Stop Auto' : 'Start Auto'}
+                      </Button>
+                      <Button 
+                        size="sm" 
+                        variant="outline"
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={isAnalyzing || continuousAnalysis}
+                      >
+                        <Upload className="mr-2 h-4 w-4" />
+                        Upload Frame
                       </Button>
                     </>
                   )}
@@ -523,14 +517,14 @@ export default function EnhancedLiveClassroom() {
                   <h3 className="text-sm font-medium">Live Feed</h3>
                   {isCameraOn ? (
                     <div className="relative">
-                      <video ref={videoRef} autoPlay playsInline className="w-full aspect-video rounded-lg" />
+                      <video ref={videoRef} autoPlay playsInline muted className="w-full aspect-video rounded-lg bg-black" />
                       {isAnalyzing && (
                         <div className="absolute inset-0 bg-black/50 flex items-center justify-center rounded-lg">
                           <div className="text-white">Analyzing...</div>
                         </div>
                       )}
                       {continuousAnalysis && (
-                        <Badge className="absolute top-2 left-2 bg-green-500">
+                        <Badge className="absolute top-2 left-2 bg-green-500 hover:bg-green-600">
                           Auto Analysis ON
                         </Badge>
                       )}
@@ -547,7 +541,7 @@ export default function EnhancedLiveClassroom() {
                     </div>
                   )}
                 </div>
-
+                
                 {/* Processed Output */}
                 <div className="space-y-2">
                   <h3 className="text-sm font-medium">AI Analysis Result</h3>
@@ -567,7 +561,7 @@ export default function EnhancedLiveClassroom() {
                         {(analysisData.names?.length > 0) && (
                           <div className="space-y-1">
                             {analysisData.names.slice(0, 3).map((name: string, i: number) => (
-                              <Badge key={i} variant="outline" className="mr-1">
+                              <Badge key={i} variant={name.startsWith('Unknown') ? 'destructive' : 'outline'} className="mr-1">
                                 {name}
                               </Badge>
                             ))}
@@ -589,7 +583,7 @@ export default function EnhancedLiveClassroom() {
               </div>
             </CardContent>
           </Card>
-
+          
           {/* Quick Stats */}
           <div className="grid grid-cols-4 gap-4">
             <Card>
@@ -657,34 +651,34 @@ export default function EnhancedLiveClassroom() {
               <CardTitle>Students</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="space-y-3 max-h-80 overflow-y-auto">
-                {students.map((student) => (
+              <div className="space-y-3 max-h-[20rem] overflow-y-auto pr-2">
+                {students.sort((a,b) => a.name.localeCompare(b.name)).map((student) => (
                   <div key={student.id} className="flex items-center justify-between p-2 rounded-lg hover:bg-muted/50">
                     <div className="flex items-center space-x-3">
                       <Avatar className="h-8 w-8">
                         <AvatarImage src={`https://api.dicebear.com/8.x/initials/svg?seed=${student.name}`} />
                         <AvatarFallback className="text-xs">
-                          {student.name.split(' ').map(n => n[0]).join('')}
+                          {student.name.split(' ').map((n: string) => n[0]).join('')}
                         </AvatarFallback>
                       </Avatar>
                       <div>
                         <p className="text-sm font-medium">{student.name}</p>
-                        {student.lastSeen && (student.status === 'Present') && (
+                        {student.status === 'Present' && student.lastSeen && (
                           <p className="text-xs text-muted-foreground">
                             {student.lastSeen.toLocaleTimeString()}
                             {student.confidence > 0 && ` • ${student.confidence}%`}
                           </p>
                         )}
-                        {(student.status === 'Absent' && student.lastSeen) && (
+                        {student.status === 'Absent' && student.lastSeen && (
                             <p className="text-xs text-muted-foreground">
-                                Last seen: {student.lastSeen.toLocaleTimeString()}
+                              Last seen: {student.lastSeen.toLocaleTimeString()}
                             </p>
                         )}
                       </div>
                     </div>
                     <div className="flex items-center space-x-2">
                       {student.status === 'Present' ? (
-                        <Badge variant="default" className="text-xs">
+                        <Badge variant="default" className="text-xs bg-green-500 hover:bg-green-600">
                           Present
                         </Badge>
                       ) : (
@@ -892,6 +886,14 @@ export default function EnhancedLiveClassroom() {
 
       {/* Hidden canvas for frame capture */}
       <canvas ref={canvasRef} className="hidden" />
+      {/* Hidden file input for image upload */}
+      <input 
+        type="file" 
+        accept="image/*" 
+        ref={fileInputRef} 
+        onChange={handleImageUploadChange} 
+        style={{ display: 'none' }} 
+      />
     </div>
   );
 }
