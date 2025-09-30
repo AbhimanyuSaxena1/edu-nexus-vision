@@ -1,16 +1,17 @@
 # ai_tutor_backend.py
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 import json
 import os
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import create_react_agent
 from langchain_groq import ChatGroq
 from typing import Optional, List, Dict, Any
+from env import GROQ_API_KEY  # Ensure your GROQ API key is set in environment variables
 
-# --- Environment Variable (for security) ---
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "YOUR_GROQ_API_KEY_HERE") # Replace with your actual key
+if GROQ_API_KEY is None:
+    raise RuntimeError("GROQ_API_KEY is not set. Please set it in your environment or env.py.")
 
 # --- Initialize FastAPI App ---
 app = FastAPI(title="AI Tutor Backend")
@@ -38,8 +39,8 @@ class TutorRequest(BaseModel):
 # --- LangGraph Agent Initialization ---
 # Initialize model (ensure GROQ_API_KEY is set)
 model = ChatGroq(
-    model="mixtral-8x7b-32768", # A reliable Groq model
-    api_key=GROQ_API_KEY,
+    model="openai/gpt-oss-120b", # A reliable Groq model
+    api_key=SecretStr(GROQ_API_KEY),
 )
 
 # Create memory checkpointer

@@ -1,368 +1,284 @@
+import json
 import os
 import time
-import threading
-import queue
 import cv2
 import face_recognition
 import numpy as np
-from ultralytics import YOLO
-import torch
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+import base64
+import uuid
+from pydantic import BaseModel
+import requests
+import logging
+from tqdm import tqdm
+from scipy.spatial.distance import cosine
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-import base64
-import io
-from PIL import Image
-from typing import Dict, List, Optional
+
+# New import for face_recognition
+import face_recognition
+
+# Database and tutor-related imports remain unchanged
 from db import DatabaseManager
-import requests
-from tqdm import tqdm
+from apiTutor import (
+    test_creator,
+    ai_tutor,
+)
 
-def download_model(model_url: str, save_path: str = "yolov12l-face.pt") -> str:
-    """
-    Downloads the model from model_url only if it does not exist locally.
-
-    Args:
-        model_url (str): URL of the model file.
-        save_path (str): Local file path to save the model.
-
-    Returns:
-        str: Path to the model file.
-    """
-    if os.path.exists(save_path):
-        print(f"[INFO] Model already exists at: {save_path}")
-        return save_path
-
-    print(f"[INFO] Downloading model from {model_url}...")
-    response = requests.get(model_url, stream=True)
-    response.raise_for_status()  # Raise error if request failed
-
-    total_size = int(response.headers.get("content-length", 0))
-    block_size = 1024  # 1 KB
-
-    with open(save_path, "wb") as file, tqdm(
-        desc=save_path,
-        total=total_size,
-        unit="B",
-        unit_scale=True,
-        unit_divisor=1024,
-    ) as bar:
-        for data in response.iter_content(block_size):
-            file.write(data)
-            bar.update(len(data))
-
-    print(f"[INFO] Model downloaded and saved to {save_path}")
-    return save_path
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 class FaceRecognitionAPI:
-    def __init__(self, model_path='yolov12l-face.pt', face_img_path="saved_faces"):
-        # Initialize paths and device
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(f"Model file not found: {model_path}")
-        
+    def __init__(self,
+                 face_img_path="saved_faces",
+                 similarity_threshold=0.4,  # Lower = more strict, Higher = more lenient
+                 ):
         os.makedirs(face_img_path, exist_ok=True)
         self.face_img_path = face_img_path
-        self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
-        self.model_path = model_path  # Store model path as instance variable
-        
-        # Load YOLO model
-        print(f"Loading YOLO model on {self.device}...")
-        self.model = YOLO(model_path)
-        if self.device != "cpu":
-            self.model.to(self.device)
-        print("Model loaded successfully")
-        
-        # Initialize database
+        self.similarity_threshold = similarity_threshold
+
+        # Initialize database manager and load in-memory caches
         self.db_manager = DatabaseManager()
         self.db_manager._connect()
-        
-        # Thread-safe queues
-        self.encoding_queue = queue.Queue(maxsize=5)
-        self.result_queue = queue.Queue()
-        
-        # Tracking data
-        self.known_faces = {}  # track_id -> (name, reid_num)
-        self.processing_tracks = set()  # Currently processing track IDs
-        self.track_timeout = 30  # Seconds to keep track info
-        
-        # Start worker threads
-        self.worker_thread = threading.Thread(target=self._encoding_worker, daemon=True)
-        self.worker_thread.start()
-        self.result_thread = threading.Thread(target=self._process_results, daemon=True)
-        self.result_thread.start()
-        
-        print("Face Recognition API initialized")
 
-    def _encoding_worker(self):
-        """Single worker thread for face encoding"""
-        while True:
-            try:
-                # Get task from queue
-                track_id, face_crop = self.encoding_queue.get(timeout=1)
-                
-                # Process face
+        # Synchronous data structures
+        self.known_faces = {}  # track_id -> (name, reid_num, encoding)
+        self.reid_embeddings = {}  # reid_num -> encoding
+
+        # Frame counter (optional - kept for compatibility with original code)
+        self.frame_count = 0
+
+        # Load existing embeddings from database
+        self._load_existing_embeddings()
+
+        logger.info("Face Recognition API initialized with face_recognition library.")
+
+    def _load_existing_embeddings(self):
+        """Load existing face embeddings from ChromaDB"""
+        try:
+            if not self.db_manager.face_db or self.db_manager.face_db.count() == 0:
+                logger.info("No existing embeddings in database")
+                return
+            
+            # Get all embeddings from ChromaDB
+            result = self.db_manager.face_db.get(include=["embeddings", "metadatas"])
+            ids = result.get("ids", [])
+            embeddings = result.get("embeddings", [])
+            metadatas = result.get("metadatas", [])
+            
+            for i, key in enumerate(ids):
                 try:
-                    face_rgb = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
-                    face_locations = face_recognition.face_locations(face_rgb)
-                    
-                    if face_locations:
-                        encoding = face_recognition.face_encodings(face_rgb, face_locations)[0]
-                        self.result_queue.put((track_id, encoding.tolist(), face_crop))
-                    else:
-                        self.result_queue.put((track_id, None, face_crop))
-                        
-                except Exception as e:
-                    print(f"Encoding error: {e}")
-                    self.result_queue.put((track_id, None, None))
-                    
-            except queue.Empty:
-                continue
-
-    def _process_results(self):
-        """Process recognition results"""
-        while True:
-            try:
-                result = self.result_queue.get(timeout=1)
-                if len(result) == 2:
-                    track_id, encoding = result
-                    face_crop = None
-                else:
-                    track_id, encoding, face_crop = result
-                
-                # Remove from processing set
-                self.processing_tracks.discard(track_id)
-                
-                if encoding is None:
+                    reid_num = int(key.split("_")[1]) if "_" in key else int(key)
+                    if embeddings is not None and i < len(embeddings) and embeddings[i] is not None:
+                        self.reid_embeddings[reid_num] = np.array(embeddings[i])
+                except (ValueError, IndexError) as e:
+                    logger.error(f"Error loading embedding for {key}: {e}")
                     continue
+            
+            logger.info(f"Loaded {len(self.reid_embeddings)} existing face embeddings from ChromaDB")
+        except Exception as e:
+            logger.error(f"Error loading existing embeddings: {e}")
+
+    def _calculate_similarity(self, encoding1, encoding2):
+        """Calculate cosine similarity between two encodings"""
+        return 1 - cosine(encoding1, encoding2)
+
+    def _find_matching_reid(self, encoding):
+        """Find matching ReID using ChromaDB and in-memory cache"""
+        try:
+            # First try ChromaDB query (if available and populated)
+            if self.db_manager.face_db and self.db_manager.face_db.count() > 0:
+                chroma_threshold = (2 - 2 * self.similarity_threshold) ** 0.5
+                
+                qr = self.db_manager.face_db.query(
+                    query_embeddings=[encoding.tolist()],
+                    n_results=1
+                )
+                
+                ids = qr.get("ids", [[]])[0]
+                distances = qr.get("distances", [[]])
+                if distances is not None and len(distances) > 0:
+                    distances = distances[0]
+                else:
+                    distances = []
+
+                if ids and distances:
+                    distance = distances[0]
+                    similarity = 1 - (distance ** 2) / 2
                     
-                # Check database
-                reid_num, name = self.db_manager.query(embedding=encoding)
-                
-                if reid_num is None:
-                    # New face
-                    reid_num = self.db_manager.next_reid_num()
-                    name = f"Unknown_{reid_num}"
-                    if face_crop is not None:
-                        cv2.imwrite(f"{self.face_img_path}/reid_{reid_num}.jpg", face_crop)
-                    self.db_manager.add(embedding=encoding, reid_num=reid_num, name=name)
-                    print(f"Added new face: ReID {reid_num}")
-                
-                # Store result
-                self.known_faces[track_id] = (name, reid_num)
-                
-            except queue.Empty:
-                continue
-            except Exception as e:
-                print(f"Result processing error: {e}")
+                    if similarity > self.similarity_threshold:
+                        key = ids[0]
+                        reid_num = int(key.split("_")[1]) if "_" in key else int(key)
+                        return reid_num, similarity
+            
+            # Fallback to check in-memory embeddings for this session
+            best_match_reid = None
+            best_similarity = -1
+            
+            for reid_num, stored_encoding in self.reid_embeddings.items():
+                similarity = self._calculate_similarity(encoding, stored_encoding)
+                if similarity > best_similarity:
+                    best_similarity = similarity
+                    best_match_reid = reid_num
+            
+            if best_similarity > self.similarity_threshold:
+                return best_match_reid, best_similarity
+            
+            return None, best_similarity
+            
+        except Exception as e:
+            logger.error(f"Error in _find_matching_reid: {e}")
+            return None, -1
 
-    def detect_faces_with_tracking(self, frame):
-        """Detect faces in frame with tracking"""
+    def detect_faces(self, frame):
+        """
+        Detect faces in the frame using the face_recognition library.
+        Returns a list of detections containing bbox, encoding, face_crop, and a unique track_id.
+        """
         try:
-            results = self.model.track(frame, persist=True, device=self.device, verbose=False)
+            # face_recognition uses (top, right, bottom, left)
+            face_locations = face_recognition.face_locations(frame)
+            encodings = face_recognition.face_encodings(frame, face_locations)
+            
             detections = []
-            
-            for result in results:
-                if result.boxes is not None:
-                    for box in result.boxes:
-                        try:
-                            x1, y1, x2, y2 = map(int, box.xyxy[0])
-                            conf = float(box.conf[0])
-                            track_id = int(box.id[0]) if hasattr(box, 'id') and box.id is not None else None
-                            
-                            if conf > 0.5 and track_id is not None:
-                                # Add padding to face crop
-                                padding = 20
-                                y1_pad = max(0, y1 - padding)
-                                y2_pad = min(frame.shape[0], y2 + padding)
-                                x1_pad = max(0, x1 - padding)
-                                x2_pad = min(frame.shape[1], x2 + padding)
-                                
-                                face_crop = frame[y1_pad:y2_pad, x1_pad:x2_pad].copy()
-                                
-                                if face_crop.size > 0:
-                                    detections.append({
-                                        'bbox': (x1, y1, x2, y2),
-                                        'conf': conf,
-                                        'face_crop': face_crop,
-                                        'track_id': track_id
-                                    })
-                        except Exception as e:
-                            print(f"Detection error: {e}")
-            
+            for i, ((top, right, bottom, left), encoding) in enumerate(zip(face_locations, encodings)):
+                face_crop = frame[top:bottom, left:right].copy()
+                detections.append({
+                    "bbox": (left, top, right, bottom),  # Converted to (x1, y1, x2, y2)
+                    "encoding": encoding,
+                    "face_crop": face_crop,
+                    "track_id": i
+                })
             return detections
             
         except Exception as e:
-            print(f"Face detection error: {e}")
-            return []
-
-    def detect_faces_simple(self, frame):
-        """Simple face detection without tracking"""
-        try:
-            results = self.model(frame, device=self.device, verbose=False)
-            detections = []
-            
-            for result in results:
-                if result.boxes is not None:
-                    for box in result.boxes:
-                        try:
-                            x1, y1, x2, y2 = map(int, box.xyxy[0])
-                            conf = float(box.conf[0])
-                            
-                            if conf > 0.5:
-                                padding = 20
-                                y1_pad = max(0, y1 - padding)
-                                y2_pad = min(frame.shape[0], y2 + padding)
-                                x1_pad = max(0, x1 - padding)
-                                x2_pad = min(frame.shape[1], x2 + padding)
-                                
-                                face_crop = frame[y1_pad:y2_pad, x1_pad:x2_pad].copy()
-                                
-                                if face_crop.size > 0:
-                                    detections.append({
-                                        'bbox': (x1, y1, x2, y2),
-                                        'conf': conf,
-                                        'face_crop': face_crop
-                                    })
-                        except Exception as e:
-                            print(f"Simple detection error: {e}")
-            
-            return detections
-            
-        except Exception as e:
-            print(f"Simple face detection error: {e}")
+            logger.error(f"Face detection error using face_recognition: {e}")
             return []
 
     def recognize_faces_sync(self, detections):
-        """Synchronously recognize faces from detections"""
+        """Synchronously recognize faces from detections using face_recognition encodings"""
         names = []
         
         for detection in detections:
+            track_id = detection["track_id"]
             try:
-                face_crop = detection['face_crop']
-                face_rgb = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
-                face_locations = face_recognition.face_locations(face_rgb)
+                encoding = detection["encoding"]
+                face_crop = detection.get("face_crop")
+                matching_reid, similarity = self._find_matching_reid(encoding)
                 
-                if face_locations:
-                    encoding = face_recognition.face_encodings(face_rgb, face_locations)[0]
-                    reid_num, name = self.db_manager.query(embedding=encoding.tolist())
-                    
-                    if name:
-                        names.append(name)
-                    else:
-                        names.append("Unknown")
+                if matching_reid is not None:
+                    key = f"reid_{matching_reid}"
+                    name = self.db_manager.reid_name_map.get(key, f"Unknown_{matching_reid}")
+                    names.append(name)
                 else:
-                    names.append("Unknown")
+                    # Handle a completely new face
+                    reid_num = self.db_manager.next_reid_num()
+                    name = f"Unknown_{reid_num}"
                     
+                    if face_crop is not None:
+                        cv2.imwrite(f"{self.face_img_path}/reid_{reid_num}.jpg", face_crop)
+                    
+                    success = self.db_manager.add(
+                        embedding=encoding.tolist(),
+                        reid_num=reid_num,
+                        name=name
+                    )
+                    
+                    if success:
+                        self.reid_embeddings[reid_num] = encoding
+                        self.known_faces[track_id] = (name, reid_num, encoding)
+                        logger.info(f"Added new face for detection {track_id}: ReID {reid_num} (sim: {similarity:.3f})")
+                    else:
+                        self.known_faces[track_id] = ("Unknown", None, None)
+                        logger.error(f"Failed to add face to database for detection {track_id}")
             except Exception as e:
-                print(f"Recognition error: {e}")
+                logger.error(f"Sync recognition error: {e}")
                 names.append("Unknown")
         
         return names
 
     def process_frame_with_info(self, frame, use_tracking=True):
-        """Process frame and return both visual result and face information"""
+        """
+        Process a frame using face_recognition. If use_tracking is True, the recognized face data
+        is cached for the session. In this simplified version, detection is performed every time.
+        """
         if frame is None:
             return None, {"head_count": 0, "names": [], "face_info": []}
-        
-        if use_tracking:
-            # Use tracking for persistent face recognition
-            detections = self.detect_faces_with_tracking(frame)
-            
-            # Process new faces for tracking
-            for detection in detections:
-                track_id = detection['track_id']
-                
-                # Skip if already known or being processed
-                if track_id in self.known_faces or track_id in self.processing_tracks:
-                    continue
-                    
-                # Add to processing queue
-                try:
-                    self.encoding_queue.put_nowait((track_id, detection['face_crop']))
-                    self.processing_tracks.add(track_id)
-                except queue.Full:
-                    print("Encoding queue full, skipping face")
-            
-            # Draw results and collect information
-            display_frame = frame.copy()
-            face_info = []
-            names = []
-            
-            for detection in detections:
-                x1, y1, x2, y2 = detection['bbox']
-                track_id = detection['track_id']
-                
-                # Determine label and color
-                if track_id in self.known_faces:
-                    name, reid_num = self.known_faces[track_id]
-                    label = f"{name} (ID:{reid_num})"
-                    color = (0, 255, 0)  # Green
-                    status = "recognized"
-                    names.append(name)
-                elif track_id in self.processing_tracks:
-                    name = "Processing..."
-                    reid_num = None
-                    label = "Processing..."
-                    color = (0, 165, 255)  # Orange
-                    status = "processing"
-                    names.append("Processing...")
+
+        # Detect faces using face_recognition
+        detections = self.detect_faces(frame)
+
+        display_frame = frame.copy()
+        face_info = []
+        names = []
+
+        # In this version, both 'tracking' and non-tracking modes perform similar detection.
+        # When use_tracking is True, we attempt to cache the recognized face for each detection.
+        for detection in detections:
+            track_id = detection["track_id"]
+            encoding = detection["encoding"]
+            face_crop = detection["face_crop"]
+
+            # If tracking mode and face not already recognized, detect and store mapping
+            if use_tracking and track_id not in self.known_faces:
+                matching_reid, similarity = self._find_matching_reid(encoding)
+                if matching_reid is not None:
+                    key = f"reid_{matching_reid}"
+                    name = self.db_manager.reid_name_map.get(key, f"Unknown_{matching_reid}")
+                    self.known_faces[track_id] = (name, matching_reid, encoding)
+                    logger.info(f"Matched detection {track_id} to existing ReID {matching_reid} (sim: {similarity:.3f})")
                 else:
-                    name = "Unknown"
-                    reid_num = None
-                    label = "Unknown"
-                    color = (0, 0, 255)  # Red
-                    status = "unknown"
+                    reid_num = self.db_manager.next_reid_num()
+                    name = f"Unknown_{reid_num}"
+                    cv2.imwrite(f"{self.face_img_path}/reid_{reid_num}.jpg", face_crop)
+                    
+                    success = self.db_manager.add(
+                        embedding=encoding.tolist(),
+                        reid_num=reid_num,
+                        name=name
+                    )
+                    
+                    if success:
+                        self.reid_embeddings[reid_num] = encoding
+                        self.known_faces[track_id] = (name, reid_num, encoding)
+                        logger.info(f"Added new face for detection {track_id}: ReID {reid_num} (sim: {similarity:.3f})")
+                    else:
+                        self.known_faces[track_id] = ("Unknown", None, None)
+                        logger.error(f"Failed to add face to database for detection {track_id}")
+
+            # Build response using either cached or fresh recognition
+            if track_id in self.known_faces:
+                name, reid_num, _ = self.known_faces[track_id]
+                if name != "Unknown":
+                    label = f"{name} (ID:{reid_num})"
+                    color = (0, 255, 0)
+                    names.append(name)
+                    status = "recognized"
+                else:
+                    label, color, status = "Unknown", (0, 0, 255), "unknown"
                     names.append("Unknown")
-                
-                # Add face info
-                face_info.append({
-                    "track_id": track_id,
-                    "name": name,
-                    "reid_num": reid_num,
-                    "bbox": [x1, y1, x2, y2],
-                    "confidence": detection['conf'],
-                    "status": status
-                })
-                
-                # Draw bounding box and label
-                cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(display_frame, label, (x1, y1 - 10),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-        
-        else:
-            # Simple detection without tracking
-            detections = self.detect_faces_simple(frame)
-            names = self.recognize_faces_sync(detections)
-            
-            # Draw results
-            display_frame = frame.copy()
-            face_info = []
-            
-            for i, (detection, name) in enumerate(zip(detections, names)):
-                x1, y1, x2, y2 = detection['bbox']
-                
-                # Determine color based on recognition
-                color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
-                label = name
-                
-                # Add face info
-                face_info.append({
-                    "detection_id": i,
-                    "name": name,
-                    "bbox": [x1, y1, x2, y2],
-                    "confidence": detection['conf'],
-                    "status": "recognized" if name != "Unknown" else "unknown"
-                })
-                
-                # Draw bounding box and label
-                cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(display_frame, label, (x1, y1 - 10),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-        
-        # Prepare return info
+            else:
+                name, reid_num = "Unknown", None
+                label, color, status = "Unknown", (0, 0, 255), "unknown"
+                names.append("Unknown")
+
+            x1, y1, x2, y2 = detection["bbox"]
+            face_info.append({
+                "detection_id": track_id, "name": name, "reid_num": reid_num,
+                "bbox": [x1, y1, x2, y2], "confidence": None, "status": status,
+            })
+
+            cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(
+                display_frame, label, (x1, y1 - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2
+            )
+
+        self.frame_count += 1
         info = {
             "head_count": len(detections),
-            "names": names,
+            "names": list(set(names)),
             "face_info": face_info,
             "tracking_enabled": use_tracking
         }
@@ -378,51 +294,137 @@ class FaceRecognitionAPI:
             reid_num = int(reid_num)
         except (ValueError, TypeError):
             return False, "Invalid ReID number"
-        
+
         success = self.db_manager.update_name(reid_num, new_name)
+
         if success:
-            # Update in-memory mappings
-            for track_id, (name, rid) in self.known_faces.items():
+            for track_id, (_, rid, emb) in self.known_faces.items():
                 if rid == reid_num:
-                    self.known_faces[track_id] = (new_name, reid_num)
+                    self.known_faces[track_id] = (new_name, reid_num, emb)
             return True, f"Renamed ReID {reid_num} to {new_name}"
-        else:
-            return False, f"Failed to rename ReID {reid_num}"
+        return False, f"Failed to rename ReID {reid_num}"
+    
+    def merge_reid(self, source_reid_num, target_reid_num):
+        """Merge two ReID numbers (for handling duplicates)"""
+        try:
+            source_reid_num = int(source_reid_num)
+            target_reid_num = int(target_reid_num)
+        except (ValueError, TypeError):
+            return False, "Invalid ReID numbers"
+        
+        if source_reid_num == target_reid_num:
+            return False, "Source and target ReID cannot be the same"
+        
+        source_key = f"reid_{source_reid_num}"
+        target_key = f"reid_{target_reid_num}"
+        
+        if source_key not in self.db_manager.reid_name_map:
+            return False, f"Source ReID {source_reid_num} not found"
+        if target_key not in self.db_manager.reid_name_map:
+            return False, f"Target ReID {target_reid_num} not found"
+        
+        target_name = self.db_manager.reid_name_map[target_key]
+        success = self.db_manager.update_name(source_reid_num, f"Merged_to_{target_reid_num}")
+    
+        if success:
+            for track_id, (name, rid, emb) in list(self.known_faces.items()):
+                if rid == source_reid_num:
+                    self.known_faces[track_id] = (target_name, target_reid_num, emb)
+            
+            if source_reid_num in self.reid_embeddings:
+                del self.reid_embeddings[source_reid_num]
+            
+            return True, f"Merged ReID {source_reid_num} into {target_reid_num}"
+        
+        return False, f"Failed to merge ReID {source_reid_num}"
 
     def get_status(self):
         """Get system status"""
         return {
-            "known_faces": len(self.known_faces),
-            "processing": len(self.processing_tracks),
-            "queue_size": self.encoding_queue.qsize(),
-            "device": self.device,
-            "model_path": os.path.basename(self.model_path),
-            "face_storage_path": self.face_img_path
+            "known_faces_in_session": len(self.known_faces),
+            "total_reid_database": len(self.reid_embeddings),
+            "processing_tasks": 0,
+            "encoding_queue_size": 0,
+            "result_queue_size": 0,
+            "face_detector": "face_recognition (HOG/CNN based)",
+            "similarity_threshold": self.similarity_threshold,
+            "face_storage_path": self.face_img_path,
+            "architecture": "Synchronous"
         }
 
     def get_all_faces(self):
         """Get all faces from database"""
-        try:
-            if hasattr(self.db_manager, 'reid_name_map') and self.db_manager.reid_name_map:
-                faces = []
-                for key, name in self.db_manager.reid_name_map.items():
-                    reid_num = key.split("_")[1] if "_" in key else key
-                    faces.append({"reid_num": int(reid_num), "name": name})
-                return faces
+        faces = []
+        if not (hasattr(self.db_manager, "reid_name_map") and self.db_manager.reid_name_map):
             return []
-        except Exception as e:
-            print(f"Error getting faces: {e}")
-            return []
+        items = list(self.db_manager.reid_name_map.items())
 
-model_url = "https://github.com/YapaLab/yolo-face/releases/download/v0.0.0/yolov12l-face.pt"
+        for key, name in items:
+            try:
+                reid_num = key.split("_")[1] if "_" in key else key
+                faces.append({"reid_num": int(reid_num), "name": name})
+            except (ValueError, IndexError) as e:
+                logger.error(f"Could not parse reid_num from key '{key}': {e}")
+                continue
+        return faces
+    
+    def find_potential_duplicates(self, similarity_threshold=None):
+        """Find potential duplicate ReIDs based on embedding similarity"""
+        if similarity_threshold is None:
+            similarity_threshold = self.similarity_threshold + 0.1
+            
+        duplicates = []
+        reid_list = list(self.reid_embeddings.items())
+        
+        for i in range(len(reid_list)):
+            for j in range(i + 1, len(reid_list)):
+                reid1, enc1 = reid_list[i]
+                reid2, enc2 = reid_list[j]
+                
+                similarity = self._calculate_similarity(enc1, enc2)
+                
+                if similarity > similarity_threshold:
+                    name1 = self.db_manager.reid_name_map.get(f"reid_{reid1}", "Unknown")
+                    name2 = self.db_manager.reid_name_map.get(f"reid_{reid2}", "Unknown")
+                
+                    duplicates.append({
+                        "reid1": reid1, "name1": name1,
+                        "reid2": reid2, "name2": name2,
+                        "similarity": float(similarity)
+                    })
+        
+        duplicates.sort(key=lambda x: x["similarity"], reverse=True)
+        return duplicates
 
-# Initialize API system
-face_api = FaceRecognitionAPI(model_path=download_model(model_url), face_img_path="saved_faces")
+    def reset_tracker(self):
+        """Reset the session cache for detected faces"""
+        self.frame_count = 0
+        self.known_faces.clear()
+        logger.info("Tracker (session cache) reset successfully")
 
-# Create FastAPI app
-app = FastAPI(title="Enhanced Face Recognition API", version="2.0")
+class TutorRequest(BaseModel):
+    topic: str
+    thread_id: str | None = None
 
-# Add CORS middleware
+class TestRequest(BaseModel):
+    thread_id: str
+    prompt: str = "Yes, please create a test."
+
+def get_agent_response(agent, message, thread_id):
+    """Helper function to invoke an agent and parse its JSON response."""
+    config = {"configurable": {"thread_id": thread_id}}
+    response = agent.invoke({"messages": [("user", message)]}, config)
+    # The response content is in the 'messages' list, typically the last one from the assistant
+    ai_message_content = response['messages'][-1].content
+    try:
+        # The agent should respond with a JSON string, so we parse it
+        return json.loads(ai_message_content)
+    except json.JSONDecodeError:
+        # If parsing fails, return the raw content with an error message
+        return {"error": "Failed to parse agent's JSON response.", "raw_response": ai_message_content}
+
+# --- FastAPI Setup ---
+app = FastAPI(title="face_recognition Face Recognition API (Synchronous)", version="4.0-sync")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -431,30 +433,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Helper function to convert image to base64
 def image_to_base64(image):
-    """Convert OpenCV image to base64 string"""
-    _, buffer = cv2.imencode('.jpg', image)
-    img_bytes = buffer.tobytes()
-    img_base64 = base64.b64encode(img_bytes).decode('utf-8')
-    return img_base64
+    _, buffer = cv2.imencode(".jpg", image)
+    return base64.b64encode(buffer.tobytes()).decode("utf-8")
 
-# Helper function to convert base64 to image
-def base64_to_image(img_base64):
-    """Convert base64 string to OpenCV image"""
-    img_bytes = base64.b64decode(img_base64)
-    img_array = np.frombuffer(img_bytes, dtype=np.uint8)
-    img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-    return img
+# Initialize the face recognition API with face_recognition backend
+face_api = FaceRecognitionAPI(face_img_path="saved_faces", similarity_threshold=0.4)
 
-# API Endpoints
+@app.post("/explain")
+def explain_topic(request: TutorRequest):
+    """
+    Endpoint to get an explanation for a given topic.
+    Creates a new conversation thread if no thread_id is provided.
+    """
+    thread_id = request.thread_id or str(uuid.uuid4())
+    response_data = get_agent_response(ai_tutor, request.topic, thread_id)
+    return {"thread_id": thread_id, "response": response_data}
+
+@app.post("/create_test")
+def create_test(request: TestRequest):
+    """
+    Endpoint to create a test based on the conversation in the given thread.
+    """
+    response_data = get_agent_response(test_creator, request.prompt, request.thread_id)
+    return {"thread_id": request.thread_id, "response": response_data}
 
 @app.post("/analyze_frame")
 async def analyze_frame(file: UploadFile = File(...), use_tracking: bool = Form(True)):
-    """
-    Analyze a frame to get both visual result and detailed face information
-    Combines headcount and face recognition functionality
-    """
+    """Analyze a frame using face_recognition"""
     try:
         # Read image file
         contents = await file.read()
@@ -463,248 +469,190 @@ async def analyze_frame(file: UploadFile = File(...), use_tracking: bool = Form(
         
         if frame is None:
             raise HTTPException(status_code=400, detail="Invalid image file")
-        
-        # Process frame with combined functionality
+
         processed_frame, face_info = face_api.process_frame_with_info(frame, use_tracking)
-        
-        # Convert processed frame to base64
         img_base64 = image_to_base64(processed_frame) if processed_frame is not None else None
-        
+
         return JSONResponse(content={
             "image": img_base64,
             "head_count": face_info["head_count"],
             "names": face_info["names"],
             "face_info": face_info["face_info"],
             "tracking_enabled": face_info["tracking_enabled"],
-            "message": f"Successfully analyzed frame with {face_info['head_count']} faces detected"
+            "message": f"Successfully analyzed frame with {face_info['head_count']} faces detected",
         })
-        
     except Exception as e:
-        print(f"Analysis error: {e}")
+        logger.error(f"Analysis error: {e}")
         raise HTTPException(status_code=500, detail=f"Error analyzing frame: {str(e)}")
-
-# Keep original endpoints for backward compatibility
-@app.post("/process_frame")
-async def process_frame(file: UploadFile = File(...)):
-    """Process an image frame for face recognition (legacy endpoint)"""
-    try:
-        contents = await file.read()
-        nparr = np.frombuffer(contents, np.uint8)
-        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
-        processed_frame, _ = face_api.process_frame_with_info(frame, use_tracking=True)
-        img_base64 = image_to_base64(processed_frame)
-        
-        return JSONResponse(content={
-            "image": img_base64,
-            "message": "Frame processed successfully"
-        })
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing frame: {str(e)}")
-
-@app.post("/headcount")
-async def get_head_count(file: UploadFile = File(...)):
-    """Get the head count and list of detected people names (legacy endpoint)"""
-    try:
-        contents = await file.read()
-        nparr = np.frombuffer(contents, np.uint8)
-        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
-        if frame is None:
-            raise HTTPException(status_code=400, detail="Invalid image file")
-        
-        _, face_info = face_api.process_frame_with_info(frame, use_tracking=False)
-        
-        return JSONResponse(content={
-            "head_count": face_info["head_count"],
-            "names": face_info["names"],
-            "message": f"Successfully detected {face_info['head_count']} faces"
-        })
-        
-    except Exception as e:
-        print(f"Headcount error: {e}")
-        raise HTTPException(status_code=500, detail=f"Error processing head count: {str(e)}")
 
 @app.post("/rename")
 async def rename_person(reid_num: str = Form(...), new_name: str = Form(...)):
-    """Rename a person in the database"""
-    try:
-        success, message = face_api.rename_person(reid_num, new_name)
-        return JSONResponse(content={
-            "success": success,
-            "message": message
-        })
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error renaming person: {str(e)}")
+    success, message = face_api.rename_person(reid_num, new_name)
+    if not success and "Invalid" in message:
+        raise HTTPException(status_code=400, detail=message)
+    return JSONResponse(content={"success": success, "message": message})
 
 @app.get("/status")
 async def get_status():
-    """Get system status"""
-    try:
-        status = face_api.get_status()
-        return JSONResponse(content=status)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting status: {str(e)}")
+    return JSONResponse(content=face_api.get_status())
 
 @app.get("/faces")
 async def get_all_faces():
-    """Get all faces in the database"""
-    try:
-        faces = face_api.get_all_faces()
-        return JSONResponse(content={"faces": faces})
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting faces: {str(e)}")
-
-@app.post("/add_student")
-async def add_student(
-    reid_num: str = Form(...), 
-    student_name: str = Form(...),
-    student_id: str = Form(None)
-):
-    """Add an unknown face to the student database"""
-    try:
-        reid_num = int(reid_num)
-        
-        if not student_name.strip():
-            raise HTTPException(status_code=400, detail="Student name cannot be empty")
-        
-        # Update the name in the face recognition database
-        success = face_api.db_manager.update_name(reid_num, student_name)
-        
-        if success:
-            # Update in-memory mappings
-            for track_id, (name, rid) in face_api.known_faces.items():
-                if rid == reid_num:
-                    face_api.known_faces[track_id] = (student_name, reid_num)
-            
-            return JSONResponse(content={
-                "success": True,
-                "message": f"Successfully added {student_name} as ReID {reid_num}",
-                "reid_num": reid_num,
-                "name": student_name,
-                "student_id": student_id
-            })
-        else:
-            raise HTTPException(status_code=404, detail=f"ReID {reid_num} not found in database")
-            
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid ReID number")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error adding student: {str(e)}")
+    return JSONResponse(content={"faces": face_api.get_all_faces()})
 
 @app.get("/unknown_faces")
 async def get_unknown_faces():
-    """Get all unknown/unidentified faces that can be added as students"""
+    """Get all unknown/unidentified faces"""
     try:
-        unknown_faces = []
-        
-        # Get all faces from database
-        if hasattr(face_api.db_manager, 'reid_name_map') and face_api.db_manager.reid_name_map:
-            for key, name in face_api.db_manager.reid_name_map.items():
-                reid_num = key.split("_")[1] if "_" in key else key
-                
-                # Check if this is an "Unknown_" face that hasn't been assigned to a student
-                if name.startswith("Unknown_"):
-                    # Check if face image exists
-                    face_image_path = f"{face_api.face_img_path}/reid_{reid_num}.jpg"
-                    has_image = os.path.exists(face_image_path)
-                    
-                    unknown_faces.append({
-                        "reid_num": int(reid_num),
-                        "name": name,
-                        "has_image": has_image,
-                        "image_path": face_image_path if has_image else None
-                    })
-        
+        all_faces = face_api.get_all_faces()
+        unknown_faces_list = []
+        for face in all_faces:
+            if face["name"].startswith("Unknown_"):
+                reid_num = face["reid_num"]
+                face_image_path = f"{face_api.face_img_path}/reid_{reid_num}.jpg"
+                has_image = os.path.exists(face_image_path)
+                unknown_faces_list.append({
+                    "reid_num": reid_num,
+                    "name": face["name"],
+                    "has_image": has_image,
+                })
         return JSONResponse(content={
-            "unknown_faces": unknown_faces,
-            "count": len(unknown_faces)
+            "unknown_faces": unknown_faces_list,
+            "count": len(unknown_faces_list),
         })
-        
     except Exception as e:
+        logger.error(f"Error getting unknown faces: {e}")
         raise HTTPException(status_code=500, detail=f"Error getting unknown faces: {str(e)}")
 
 @app.get("/face_image/{reid_num}")
 async def get_face_image(reid_num: int):
-    """Get the saved face image for a specific ReID number"""
-    try:
-        face_image_path = f"{face_api.face_img_path}/reid_{reid_num}.jpg"
-        
-        if not os.path.exists(face_image_path):
-            raise HTTPException(status_code=404, detail="Face image not found")
-        
-        # Read and encode image as base64
-        with open(face_image_path, "rb") as image_file:
-            image_data = image_file.read()
-            image_base64 = base64.b64encode(image_data).decode('utf-8')
-        
-        return JSONResponse(content={
-            "reid_num": reid_num,
-            "image": image_base64,
-            "image_path": face_image_path
-        })
-        
-    except FileNotFoundError:
+    """Get saved face image for a ReID number"""
+    face_image_path = f"{face_api.face_img_path}/reid_{reid_num}.jpg"
+    if not os.path.exists(face_image_path):
         raise HTTPException(status_code=404, detail="Face image not found")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error retrieving face image: {str(e)}")
+    with open(face_image_path, "rb") as image_file:
+        image_data = image_file.read()
+    image_base64 = base64.b64encode(image_data).decode("utf-8")
+    return JSONResponse(content={"reid_num": reid_num, "image": image_base64})
+
+@app.post("/add_student")
+async def add_student(reid_num: str = Form(...), student_name: str = Form(...)):
+    """Rename an 'Unknown' face to a student's name"""
+    success, message = face_api.rename_person(reid_num, student_name)
+    if not success:
+        if "Invalid" in message or "empty" in message:
+            raise HTTPException(status_code=400, detail=message)
+        raise HTTPException(status_code=500, detail=message)
+    return JSONResponse(content={
+        "success": True,
+        "message": f"Successfully added {student_name} (ReID: {reid_num})",
+    })
 
 @app.delete("/remove_face/{reid_num}")
 async def remove_face(reid_num: int):
-    """Remove a face from the database (for faces that shouldn't be added as students)"""
-    try:
-        # This would require implementing a delete method in your DatabaseManager
-        # For now, we'll just rename it to indicate it's been dismissed
-        current_name = f"Unknown_{reid_num}"
-        dismissed_name = f"Dismissed_{reid_num}"
-        
-        success = face_api.db_manager.update_name(reid_num, dismissed_name)
-        
-        if success:
-            # Update in-memory mappings
-            for track_id, (name, rid) in face_api.known_faces.items():
-                if rid == reid_num:
-                    face_api.known_faces[track_id] = (dismissed_name, reid_num)
-            
-            return JSONResponse(content={
-                "success": True,
-                "message": f"Face ReID {reid_num} has been dismissed"
-            })
-        else:
-            raise HTTPException(status_code=404, detail=f"ReID {reid_num} not found")
-            
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error removing face: {str(e)}")
+    """Remove a face by renaming it to 'Dismissed'"""
+    success, message = face_api.rename_person(reid_num, f"Dismissed_{reid_num}")
+    if not success:
+        raise HTTPException(status_code=404, detail=f"ReID {reid_num} not found")
+    return JSONResponse(content={
+        "success": True,
+        "message": f"Face ReID {reid_num} has been dismissed.",
+    })
 
-# Update the root endpoint to include new endpoints
+@app.websocket("/ws/analyze")
+async def websocket_analyze_frame(websocket: WebSocket):
+    await websocket.accept()
+    logger.info("WebSocket client connected.")
+    try:
+        while True:
+            data = await websocket.receive_json()
+            image_b64 = data.get("image")
+            use_tracking = data.get("use_tracking", True)
+
+            if not image_b64:
+                await websocket.send_json({"error": "No image data provided."})
+                continue
+            
+            try:
+                img_bytes = base64.b64decode(image_b64)
+                nparr = np.frombuffer(img_bytes, np.uint8)
+                frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+                if frame is None:
+                    await websocket.send_json({"error": "Invalid image data."})
+                    continue
+                
+                processed_frame, face_info = face_api.process_frame_with_info(frame, use_tracking)
+
+                processed_image_b64 = image_to_base64(processed_frame) if processed_frame is not None else None
+                
+                await websocket.send_json({
+                    "image": processed_image_b64,
+                    "head_count": face_info["head_count"],
+                    "names": face_info["names"],
+                    "face_info": face_info["face_info"],
+                    "tracking_enabled": face_info["tracking_enabled"],
+                })
+            
+            except (ValueError, TypeError) as e:
+                logger.error(f"Error decoding base64 image: {e}")
+                await websocket.send_json({"error": "Base64 decoding failed."})
+            except Exception as e:
+                logger.error(f"Error during frame processing: {e}")
+                await websocket.send_json({"error": f"An unexpected error occurred: {str(e)}"})
+
+    except WebSocketDisconnect:
+        logger.info("WebSocket client disconnected.")
+    except Exception as e:
+        logger.error(f"An unexpected error occurred in the WebSocket handler: {e}")
+        await websocket.close(code=1011, reason="Server error")
+
+@app.post("/merge_reid")
+async def merge_reid(source_reid: int = Form(...), target_reid: int = Form(...)):
+    """Merge two ReID numbers (source becomes target)"""
+    success, message = face_api.merge_reid(source_reid, target_reid)
+    if not success:
+        raise HTTPException(status_code=400, detail=message)
+    return JSONResponse(content={
+        "success": True,
+        "message": message
+    })
+
+@app.get("/roster")
+async def get_roster():
+    """Get the list of all known/enrolled students."""
+    try:
+        all_faces = face_api.get_all_faces()
+        student_roster = [
+            face for face in all_faces
+            if not face["name"].startswith("Unknown_") and not face["name"].startswith("Dismissed_")
+        ]
+        return JSONResponse(content={"roster": student_roster})
+    except Exception as e:
+        logger.error(f"Error getting roster: {e}")
+        raise HTTPException(status_code=500, detail=f"Error getting roster: {str(e)}")
+
+@app.post("/reset_tracker")
+async def reset_tracker():
+    """Reset the session cache for face recognition"""
+    try:
+        face_api.reset_tracker()
+        return JSONResponse(content={
+            "success": True,
+            "message": "Tracker reset successfully"
+        })
+    except Exception as e:
+        logger.error(f"Error resetting tracker: {e}")
+        raise HTTPException(status_code=500, detail=f"Error resetting tracker: {str(e)}")
+
 @app.get("/")
 async def root():
-    """Root endpoint with API information"""
     return {
-        "message": "Enhanced Face Recognition API with Student Management",
-        "version": "2.1",
-        "endpoints": {
-            "analyze_frame": "/analyze_frame (POST) - Main endpoint with combined functionality",
-            "process_frame": "/process_frame (POST) - Legacy tracking endpoint",
-            "headcount": "/headcount (POST) - Legacy headcount endpoint",
-            "rename": "/rename (POST) - Rename a person",
-            "add_student": "/add_student (POST) - Add unknown face as student",
-            "unknown_faces": "/unknown_faces (GET) - Get all unknown faces",
-            "face_image": "/face_image/{reid_num} (GET) - Get face image",
-            "remove_face": "/remove_face/{reid_num} (DELETE) - Dismiss unknown face",
-            "status": "/status (GET) - System status",
-            "faces": "/faces (GET) - All faces in database"
-        },
-        "features": [
-            "Combined headcount and face recognition",
-            "Optional tracking mode",
-            "Detailed face information",
-            "Real-time processing",
-            "Person database management",
-            "Student roster management",
-            "Unknown face identification and addition"
-        ]
+        "message": "face_recognition Face Recognition API (Synchronous)",
+        "version": "4.0-sync",
+        "warning": "This synchronous version is NOT recommended for real-time video streams due to performance bottlenecks."
     }
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
