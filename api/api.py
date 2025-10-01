@@ -1,8 +1,9 @@
+import asyncio
 import json
 import os
+import threading
 import time
 import cv2
-import face_recognition
 import numpy as np
 import base64
 import uuid
@@ -15,8 +16,11 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form, WebSocket, W
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-# New import for face_recognition
-import face_recognition
+# YOLO11 and InsightFace imports
+from ultralytics import YOLO
+import onnxruntime as ort
+import insightface
+from insightface.app import FaceAnalysis
 
 # Database and tutor-related imports remain unchanged
 from db import DatabaseManager
@@ -29,30 +33,146 @@ from apiTutor import (
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# IoU Tracker class remains the same
+class IoUTracker:
+    """Ultra-simple IoU tracker. No external deps."""
+    def __init__(self, iou_threshold=0.3, max_age=5):
+        self.iou_threshold = iou_threshold
+        self.max_age = max_age
+        self.tracks = {}
+        self._next_id = 0
+
+    @staticmethod
+    def _iou(a, b):
+        x1 = max(a[0], b[0]); y1 = max(a[1], b[1])
+        x2 = min(a[2], b[2]); y2 = min(a[3], b[3])
+        inter = max(0, x2 - x1) * max(0, y2 - y1)
+        union = (a[2]-a[0])*(a[3]-a[1]) + (b[2]-b[0])*(b[3]-b[1]) - inter
+        return inter / (union + 1e-9)
+
+    def update(self, detections):
+        for t in self.tracks.values():
+            t["age"] += 1
+
+        matched_trk = set(); matched_det = set()
+        for did, det in enumerate(detections):
+            best_iou, best_tid = self.iou_threshold, None
+            for tid, trk in self.tracks.items():
+                if tid in matched_trk:
+                    continue
+                iou = self._iou(det["bbox"], trk["bbox"])
+                if iou > best_iou:
+                    best_iou, best_tid = iou, tid
+            if best_tid is not None:
+                matched_trk.add(best_tid); matched_det.add(did)
+                trk = self.tracks[best_tid]
+                trk["bbox"] = det["bbox"]; trk["age"] = 0
+                det["track_id"] = best_tid
+                det["reid_num"] = trk.get("reid")
+                det["name"] = trk.get("name")
+
+        for did, det in enumerate(detections):
+            if did in matched_det:
+                continue
+            tid = self._next_id; self._next_id += 1
+            self.tracks[tid] = {"bbox": det["bbox"], "age": 0,
+                               "reid": None, "name": None}
+            det["track_id"] = tid
+
+        self.tracks = {tid: trk for tid, trk in self.tracks.items()
+                      if trk["age"] < self.max_age}
+        return detections
+
+
 class FaceRecognitionAPI:
     def __init__(self,
-                 face_img_path="saved_faces",
-                 similarity_threshold=0.4,  # Lower = more strict, Higher = more lenient
-                 ):
+                face_img_path="saved_faces",
+                similarity_threshold=0.4,
+                yolo_model_path="yolov12l-face.pt",  # Path to YOLO11 face model
+                use_gpu=True):
+        
         os.makedirs(face_img_path, exist_ok=True)
         self.face_img_path = face_img_path
         self.similarity_threshold = similarity_threshold
+        self.use_gpu = use_gpu
+        self._processing_lock = threading.Lock() # Add this lock
+
+        # Initialize YOLO11 for face detection
+        try:
+            self.yolo_model = YOLO('yolov12l-face.pt')
+            
+            # Set device for YOLO
+            if self.use_gpu:
+                import torch
+                if torch.cuda.is_available():
+                    self.device = 'cuda'
+                    logger.info("YOLO11 using CUDA GPU")
+                else:
+                    self.device = 'cpu'
+                    logger.warning("CUDA not available, YOLO11 falling back to CPU")
+            else:
+                self.device = 'cpu'
+                
+        except Exception as e:
+            logger.error(f"Error initializing YOLO11: {e}")
+            raise
+
+        # Initialize InsightFace with GPU support
+        try:
+            # Set GPU providers for ONNX Runtime
+            providers = ['CPUExecutionProvider']
+            if self.use_gpu:
+                providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+                # Check if CUDA is available for ONNX Runtime
+                available_providers = ort.get_available_providers()
+                if 'CUDAExecutionProvider' in available_providers:
+                    logger.info("InsightFace using CUDA GPU")
+                else:
+                    logger.warning("CUDA provider not available for ONNX Runtime, falling back to CPU")
+                    providers = ['CPUExecutionProvider']
+            
+            # Initialize FaceAnalysis
+            self.face_app = FaceAnalysis(
+                name='buffalo_l',  # Use buffalo_l model for better accuracy
+                providers=providers,
+                allowed_modules=['detection', 'recognition']
+            )
+            self.face_app.prepare(ctx_id=0 if self.use_gpu else -1, det_size=(640, 640))
+            
+            logger.info(f"InsightFace initialized with providers: {providers}")
+            
+        except Exception as e:
+            logger.error(f"Error initializing InsightFace: {e}")
+            # Fallback to lighter model if buffalo_l fails
+            try:
+                self.face_app = FaceAnalysis(
+                    name='buffalo_s',
+                    providers=providers,
+                    allowed_modules=['detection', 'recognition']
+                )
+                self.face_app.prepare(ctx_id=0 if self.use_gpu else -1, det_size=(640, 640))
+                logger.info("Fallback to buffalo_s model successful")
+            except Exception as e2:
+                logger.error(f"Failed to initialize InsightFace completely: {e2}")
+                raise
 
         # Initialize database manager and load in-memory caches
         self.db_manager = DatabaseManager()
         self.db_manager._connect()
+        self.reid_counter = getattr(self, "reid_counter", 0)
 
         # Synchronous data structures
-        self.known_faces = {}  # track_id -> (name, reid_num, encoding)
-        self.reid_embeddings = {}  # reid_num -> encoding
+        self.known_faces = {}
+        self.reid_embeddings = {}
+        self.tracker = IoUTracker(iou_threshold=0.3, max_age=5)
 
-        # Frame counter (optional - kept for compatibility with original code)
+        # Frame counter
         self.frame_count = 0
 
         # Load existing embeddings from database
         self._load_existing_embeddings()
 
-        logger.info("Face Recognition API initialized with face_recognition library.")
+        logger.info("Face Recognition API initialized with YOLO11 and InsightFace GPU support")
 
     def _load_existing_embeddings(self):
         """Load existing face embeddings from ChromaDB"""
@@ -61,7 +181,6 @@ class FaceRecognitionAPI:
                 logger.info("No existing embeddings in database")
                 return
             
-            # Get all embeddings from ChromaDB
             result = self.db_manager.face_db.get(include=["embeddings", "metadatas"])
             ids = result.get("ids", [])
             embeddings = result.get("embeddings", [])
@@ -80,210 +199,247 @@ class FaceRecognitionAPI:
         except Exception as e:
             logger.error(f"Error loading existing embeddings: {e}")
 
+    def detect_faces_yolo(self, frame):
+        """Detect faces using YOLO11"""
+        try:
+            # Run YOLO detection
+            results = self.yolo_model(frame, device=self.device, conf=0.4)
+            
+            detections = []
+            for r in results:
+                boxes = r.boxes
+                if boxes is None:
+                    continue
+                    
+                for box in boxes:
+                    # Get bounding box coordinates
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                    x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+                    
+                    # Ensure coordinates are within frame boundaries
+                    x1 = max(0, x1)
+                    y1 = max(0, y1)
+                    x2 = min(frame.shape[1], x2)
+                    y2 = min(frame.shape[0], y2)
+                    
+                    # Extract face crop
+                    face_crop = frame[y1:y2, x1:x2].copy()
+                    
+                    if face_crop.size > 0:
+                        detection = {
+                            "bbox": (x1, y1, x2, y2),
+                            "face_crop": face_crop,
+                            "confidence": float(box.conf[0]) if box.conf is not None else 0.99
+                        }
+                        detections.append(detection)
+            
+            return detections
+            
+        except Exception as e:
+            logger.error(f"YOLO face detection error: {e}")
+            return []
+
+    def extract_embeddings_insightface(self, frame, detections):
+        """Extract face embeddings using InsightFace"""
+        try:
+            # Use InsightFace to get embeddings for each detection
+            for det in detections:
+                x1, y1, x2, y2 = det["bbox"]
+                face_crop = det["face_crop"]
+                
+                # Try to get embedding from InsightFace
+                try:
+                    # InsightFace expects BGR format
+                    faces = self.face_app.get(face_crop)
+                    
+                    if faces and len(faces) > 0:
+                        # Use the first face's embedding
+                        face = faces[0]
+                        det["encoding"] = face.embedding
+                    else:
+                        # Fallback: try with the full frame at the bbox location
+                        faces = self.face_app.get(frame)
+                        
+                        # Find the face closest to our bbox
+                        best_face = None
+                        best_overlap = 0
+                        
+                        for face in faces:
+                            face_bbox = face.bbox.astype(int)
+                            fx1, fy1, fx2, fy2 = face_bbox
+                            
+                            # Calculate overlap
+                            overlap_x1 = max(x1, fx1)
+                            overlap_y1 = max(y1, fy1)
+                            overlap_x2 = min(x2, fx2)
+                            overlap_y2 = min(y2, fy2)
+                            
+                            if overlap_x2 > overlap_x1 and overlap_y2 > overlap_y1:
+                                overlap_area = (overlap_x2 - overlap_x1) * (overlap_y2 - overlap_y1)
+                                if overlap_area > best_overlap:
+                                    best_overlap = overlap_area
+                                    best_face = face
+                        
+                        if best_face is not None:
+                            det["encoding"] = best_face.embedding
+                        else:
+                            # Generate a random embedding as fallback
+                            det["encoding"] = np.random.randn(512).astype(np.float32)
+                            logger.warning(f"Could not extract embedding for face at {det['bbox']}")
+                            
+                except Exception as e:
+                    logger.error(f"Error extracting embedding for single face: {e}")
+                    det["encoding"] = np.random.randn(512).astype(np.float32)
+                
+                # Ensure encoding is normalized
+                if "encoding" in det and det["encoding"] is not None:
+                    norm = np.linalg.norm(det["encoding"])
+                    if norm > 0:
+                        det["encoding"] = det["encoding"] / norm
+                        
+            return detections
+            
+        except Exception as e:
+            logger.error(f"InsightFace embedding extraction error: {e}")
+            # Add random embeddings as fallback
+            for det in detections:
+                if "encoding" not in det:
+                    det["encoding"] = np.random.randn(512).astype(np.float32)
+            return detections
+
+    def detect_faces(self, frame):
+        """Main face detection and embedding extraction pipeline"""
+        # Step 1: Detect faces with YOLO11
+        detections = self.detect_faces_yolo(frame)
+        
+        # Step 2: Extract embeddings with InsightFace
+        if detections:
+            detections = self.extract_embeddings_insightface(frame, detections)
+        
+        # Add track_id placeholder (will be updated by tracker)
+        reid_num = self.db_manager.next_reid_num()
+        for det in detections:
+            det["track_id"] = reid_num
+            
+        return detections
+
+    def process_frame_with_info(self, frame, use_tracking=True):
+        with self._processing_lock:
+            if frame is None:
+                return None, {"head_count": 0, "names": [], "face_info": []}
+    
+            detections = self.detect_faces(frame)
+            if use_tracking:
+                detections = self.tracker.update(detections)
+    
+            display_frame = frame.copy()
+            face_info, names = [], []
+    
+            for det in detections:
+                track_id = det["track_id"]
+                encoding = det.get("encoding")
+                face_crop = det["face_crop"]
+                confidence = det.get("confidence", 0.99)
+    
+                if encoding is None:
+                    continue
+                
+                # Check if track already locked to a ReID
+                if use_tracking and self.tracker.tracks[track_id].get("reid") is not None:
+                    name = self.tracker.tracks[track_id]["name"]
+                    reid_num = self.tracker.tracks[track_id]["reid"]
+                else:
+                    # One-time lookup/creation
+                    matching_reid, sim = self._find_matching_reid(encoding)
+                    if matching_reid is not None:
+                        reid_num = matching_reid
+                        name = self.db_manager.reid_name_map.get(f"reid_{reid_num}",
+                                                                f"Unknown_{reid_num}")
+                    else:
+                        reid_num = self.db_manager.next_reid_num()
+                        name = f"Unknown_{reid_num}"
+                        cv2.imwrite(f"{self.face_img_path}/reid_{reid_num}.jpg", face_crop)
+                        self.db_manager.add(embedding=encoding.tolist(),
+                                          reid_num=reid_num,
+                                          name=name)
+                        self.reid_embeddings[reid_num] = encoding
+                    
+                    # Lock to track
+                    if use_tracking:
+                        self.tracker.tracks[track_id]["reid"] = reid_num
+                        self.tracker.tracks[track_id]["name"] = name
+    
+                label = f"{name} (ID:{reid_num})"
+                color = (0, 255, 0) if not name.startswith("Unknown") else (0, 0, 255)
+                status = "recognized" if color == (0, 255, 0) else "unknown"
+                names.append(name)
+    
+                x1, y1, x2, y2 = det["bbox"]
+                face_info.append({
+                    "detection_id": track_id,
+                    "name": name,
+                    "reid_num": reid_num,
+                    "bbox": [x1, y1, x2, y2],
+                    "confidence": float(confidence),
+                    "status": status
+                })
+                
+                # Draw bounding box and label
+                cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
+                label_with_conf = f"{label} ({confidence:.2f})"
+                cv2.putText(display_frame, label_with_conf, (x1, y1 - 10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+    
+            self.frame_count += 1
+            info = {
+                "head_count": len(detections),
+                "names": list(set(names)),
+                "face_info": face_info,
+                "tracking_enabled": use_tracking,
+                "detector": "YOLO11",
+                "recognizer": "InsightFace",
+                "gpu_enabled": self.use_gpu
+            }
+            return display_frame, info
+
     def _calculate_similarity(self, encoding1, encoding2):
         """Calculate cosine similarity between two encodings"""
         return 1 - cosine(encoding1, encoding2)
 
+    # In api.py FaceRecognitionAPI class
     def _find_matching_reid(self, encoding):
-        """Find matching ReID using ChromaDB and in-memory cache"""
+        """Find matching ReID using only ChromaDB."""
         try:
-            # First try ChromaDB query (if available and populated)
-            if self.db_manager.face_db and self.db_manager.face_db.count() > 0:
-                chroma_threshold = (2 - 2 * self.similarity_threshold) ** 0.5
-                
-                qr = self.db_manager.face_db.query(
-                    query_embeddings=[encoding.tolist()],
-                    n_results=1
-                )
-                
-                ids = qr.get("ids", [[]])[0]
-                distances = qr.get("distances", [[]])
-                if distances is not None and len(distances) > 0:
-                    distances = distances[0]
-                else:
-                    distances = []
-
-                if ids and distances:
-                    distance = distances[0]
-                    similarity = 1 - (distance ** 2) / 2
-                    
-                    if similarity > self.similarity_threshold:
-                        key = ids[0]
-                        reid_num = int(key.split("_")[1]) if "_" in key else int(key)
-                        return reid_num, similarity
-            
-            # Fallback to check in-memory embeddings for this session
-            best_match_reid = None
-            best_similarity = -1
-            
-            for reid_num, stored_encoding in self.reid_embeddings.items():
-                similarity = self._calculate_similarity(encoding, stored_encoding)
-                if similarity > best_similarity:
-                    best_similarity = similarity
-                    best_match_reid = reid_num
-            
-            if best_similarity > self.similarity_threshold:
-                return best_match_reid, best_similarity
-            
-            return None, best_similarity
-            
+            if not self.db_manager.face_db or self.db_manager.face_db.count() == 0:
+                return None, -1
+    
+            # Query ChromaDB for the closest match
+            qr = self.db_manager.face_db.query(
+                query_embeddings=[encoding.tolist()],
+                n_results=1
+            )
+    
+            ids = qr.get("ids", [[]])[0]
+            distances = qr.get("distances")
+            if distances is None or not distances or not distances[0]:
+                return None, -1
+            distances = distances[0]
+    
+            if ids and distances:
+                distance = distances[0]
+                # Convert L2 distance to cosine similarity
+                similarity = 1 - (distance ** 2) / 2
+    
+                if similarity > self.similarity_threshold:
+                    key = ids[0]
+                    reid_num = int(key.split("_")[1])
+                    return reid_num, similarity
+    
+            return None, -1 # Return -1 for similarity if no good match found
+    
         except Exception as e:
             logger.error(f"Error in _find_matching_reid: {e}")
             return None, -1
-
-    def detect_faces(self, frame):
-        """
-        Detect faces in the frame using the face_recognition library.
-        Returns a list of detections containing bbox, encoding, face_crop, and a unique track_id.
-        """
-        try:
-            # face_recognition uses (top, right, bottom, left)
-            face_locations = face_recognition.face_locations(frame)
-            encodings = face_recognition.face_encodings(frame, face_locations)
-            
-            detections = []
-            for i, ((top, right, bottom, left), encoding) in enumerate(zip(face_locations, encodings)):
-                face_crop = frame[top:bottom, left:right].copy()
-                detections.append({
-                    "bbox": (left, top, right, bottom),  # Converted to (x1, y1, x2, y2)
-                    "encoding": encoding,
-                    "face_crop": face_crop,
-                    "track_id": i
-                })
-            return detections
-            
-        except Exception as e:
-            logger.error(f"Face detection error using face_recognition: {e}")
-            return []
-
-    def recognize_faces_sync(self, detections):
-        """Synchronously recognize faces from detections using face_recognition encodings"""
-        names = []
-        
-        for detection in detections:
-            track_id = detection["track_id"]
-            try:
-                encoding = detection["encoding"]
-                face_crop = detection.get("face_crop")
-                matching_reid, similarity = self._find_matching_reid(encoding)
-                
-                if matching_reid is not None:
-                    key = f"reid_{matching_reid}"
-                    name = self.db_manager.reid_name_map.get(key, f"Unknown_{matching_reid}")
-                    names.append(name)
-                else:
-                    # Handle a completely new face
-                    reid_num = self.db_manager.next_reid_num()
-                    name = f"Unknown_{reid_num}"
-                    
-                    if face_crop is not None:
-                        cv2.imwrite(f"{self.face_img_path}/reid_{reid_num}.jpg", face_crop)
-                    
-                    success = self.db_manager.add(
-                        embedding=encoding.tolist(),
-                        reid_num=reid_num,
-                        name=name
-                    )
-                    
-                    if success:
-                        self.reid_embeddings[reid_num] = encoding
-                        self.known_faces[track_id] = (name, reid_num, encoding)
-                        logger.info(f"Added new face for detection {track_id}: ReID {reid_num} (sim: {similarity:.3f})")
-                    else:
-                        self.known_faces[track_id] = ("Unknown", None, None)
-                        logger.error(f"Failed to add face to database for detection {track_id}")
-            except Exception as e:
-                logger.error(f"Sync recognition error: {e}")
-                names.append("Unknown")
-        
-        return names
-
-    def process_frame_with_info(self, frame, use_tracking=True):
-        """
-        Process a frame using face_recognition. If use_tracking is True, the recognized face data
-        is cached for the session. In this simplified version, detection is performed every time.
-        """
-        if frame is None:
-            return None, {"head_count": 0, "names": [], "face_info": []}
-
-        # Detect faces using face_recognition
-        detections = self.detect_faces(frame)
-
-        display_frame = frame.copy()
-        face_info = []
-        names = []
-
-        # In this version, both 'tracking' and non-tracking modes perform similar detection.
-        # When use_tracking is True, we attempt to cache the recognized face for each detection.
-        for detection in detections:
-            track_id = detection["track_id"]
-            encoding = detection["encoding"]
-            face_crop = detection["face_crop"]
-
-            # If tracking mode and face not already recognized, detect and store mapping
-            if use_tracking and track_id not in self.known_faces:
-                matching_reid, similarity = self._find_matching_reid(encoding)
-                if matching_reid is not None:
-                    key = f"reid_{matching_reid}"
-                    name = self.db_manager.reid_name_map.get(key, f"Unknown_{matching_reid}")
-                    self.known_faces[track_id] = (name, matching_reid, encoding)
-                    logger.info(f"Matched detection {track_id} to existing ReID {matching_reid} (sim: {similarity:.3f})")
-                else:
-                    reid_num = self.db_manager.next_reid_num()
-                    name = f"Unknown_{reid_num}"
-                    cv2.imwrite(f"{self.face_img_path}/reid_{reid_num}.jpg", face_crop)
-                    
-                    success = self.db_manager.add(
-                        embedding=encoding.tolist(),
-                        reid_num=reid_num,
-                        name=name
-                    )
-                    
-                    if success:
-                        self.reid_embeddings[reid_num] = encoding
-                        self.known_faces[track_id] = (name, reid_num, encoding)
-                        logger.info(f"Added new face for detection {track_id}: ReID {reid_num} (sim: {similarity:.3f})")
-                    else:
-                        self.known_faces[track_id] = ("Unknown", None, None)
-                        logger.error(f"Failed to add face to database for detection {track_id}")
-
-            # Build response using either cached or fresh recognition
-            if track_id in self.known_faces:
-                name, reid_num, _ = self.known_faces[track_id]
-                if name != "Unknown":
-                    label = f"{name} (ID:{reid_num})"
-                    color = (0, 255, 0)
-                    names.append(name)
-                    status = "recognized"
-                else:
-                    label, color, status = "Unknown", (0, 0, 255), "unknown"
-                    names.append("Unknown")
-            else:
-                name, reid_num = "Unknown", None
-                label, color, status = "Unknown", (0, 0, 255), "unknown"
-                names.append("Unknown")
-
-            x1, y1, x2, y2 = detection["bbox"]
-            face_info.append({
-                "detection_id": track_id, "name": name, "reid_num": reid_num,
-                "bbox": [x1, y1, x2, y2], "confidence": None, "status": status,
-            })
-
-            cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(
-                display_frame, label, (x1, y1 - 10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2
-            )
-
-        self.frame_count += 1
-        info = {
-            "head_count": len(detections),
-            "names": list(set(names)),
-            "face_info": face_info,
-            "tracking_enabled": use_tracking
-        }
-        
-        return display_frame, info
 
     def rename_person(self, reid_num, new_name):
         """Rename a person in the database"""
@@ -303,9 +459,9 @@ class FaceRecognitionAPI:
                     self.known_faces[track_id] = (new_name, reid_num, emb)
             return True, f"Renamed ReID {reid_num} to {new_name}"
         return False, f"Failed to rename ReID {reid_num}"
-    
+
     def merge_reid(self, source_reid_num, target_reid_num):
-        """Merge two ReID numbers (for handling duplicates)"""
+        """Merge two ReID numbers"""
         try:
             source_reid_num = int(source_reid_num)
             target_reid_num = int(target_reid_num)
@@ -340,16 +496,30 @@ class FaceRecognitionAPI:
 
     def get_status(self):
         """Get system status"""
+        gpu_status = "Enabled" if self.use_gpu else "Disabled"
+        
+        # Check actual GPU availability
+        gpu_details = []
+        try:
+            import torch
+            if torch.cuda.is_available():
+                gpu_details.append(f"CUDA: {torch.cuda.get_device_name(0)}")
+        except:
+            pass
+            
+        if 'CUDAExecutionProvider' in ort.get_available_providers():
+            gpu_details.append("ONNX Runtime: CUDA available")
+        
         return {
             "known_faces_in_session": len(self.known_faces),
             "total_reid_database": len(self.reid_embeddings),
-            "processing_tasks": 0,
-            "encoding_queue_size": 0,
-            "result_queue_size": 0,
-            "face_detector": "face_recognition (HOG/CNN based)",
+            "face_detector": "YOLO11",
+            "face_recognizer": "InsightFace (buffalo_l/buffalo_s)",
             "similarity_threshold": self.similarity_threshold,
             "face_storage_path": self.face_img_path,
-            "architecture": "Synchronous"
+            "gpu_status": gpu_status,
+            "gpu_details": gpu_details if gpu_details else ["No GPU detected"],
+            "architecture": "Synchronous with GPU acceleration"
         }
 
     def get_all_faces(self):
@@ -367,9 +537,9 @@ class FaceRecognitionAPI:
                 logger.error(f"Could not parse reid_num from key '{key}': {e}")
                 continue
         return faces
-    
+
     def find_potential_duplicates(self, similarity_threshold=None):
-        """Find potential duplicate ReIDs based on embedding similarity"""
+        """Find potential duplicate ReIDs"""
         if similarity_threshold is None:
             similarity_threshold = self.similarity_threshold + 0.1
             
@@ -400,8 +570,11 @@ class FaceRecognitionAPI:
         """Reset the session cache for detected faces"""
         self.frame_count = 0
         self.known_faces.clear()
+        self.tracker = IoUTracker(iou_threshold=0.3, max_age=5)
         logger.info("Tracker (session cache) reset successfully")
 
+
+# Pydantic models
 class TutorRequest(BaseModel):
     topic: str
     thread_id: str | None = None
@@ -414,17 +587,14 @@ def get_agent_response(agent, message, thread_id):
     """Helper function to invoke an agent and parse its JSON response."""
     config = {"configurable": {"thread_id": thread_id}}
     response = agent.invoke({"messages": [("user", message)]}, config)
-    # The response content is in the 'messages' list, typically the last one from the assistant
     ai_message_content = response['messages'][-1].content
     try:
-        # The agent should respond with a JSON string, so we parse it
         return json.loads(ai_message_content)
     except json.JSONDecodeError:
-        # If parsing fails, return the raw content with an error message
         return {"error": "Failed to parse agent's JSON response.", "raw_response": ai_message_content}
 
-# --- FastAPI Setup ---
-app = FastAPI(title="face_recognition Face Recognition API (Synchronous)", version="4.0-sync")
+# FastAPI Setup
+app = FastAPI(title="YOLO11 + InsightFace GPU Face Recognition API", version="5.0-gpu")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -437,9 +607,13 @@ def image_to_base64(image):
     _, buffer = cv2.imencode(".jpg", image)
     return base64.b64encode(buffer.tobytes()).decode("utf-8")
 
-# Initialize the face recognition API with face_recognition backend
-face_api = FaceRecognitionAPI(face_img_path="saved_faces", similarity_threshold=0.4)
-
+# Initialize the face recognition API with YOLO11 and InsightFace
+face_api = FaceRecognitionAPI(
+    face_img_path="saved_faces",
+    similarity_threshold=0.4,
+    yolo_model_path="yolo12l-face.pt",  # You'll need to download or train this model
+    use_gpu=True
+)
 @app.post("/explain")
 def explain_topic(request: TutorRequest):
     """
@@ -470,7 +644,11 @@ async def analyze_frame(file: UploadFile = File(...), use_tracking: bool = Form(
         if frame is None:
             raise HTTPException(status_code=400, detail="Invalid image file")
 
-        processed_frame, face_info = face_api.process_frame_with_info(frame, use_tracking)
+        import asyncio
+        loop = asyncio.get_event_loop()
+        processed_frame, face_info = await loop.run_in_executor(
+            None, face_api.process_frame_with_info, frame, use_tracking
+        )
         img_base64 = image_to_base64(processed_frame) if processed_frame is not None else None
 
         return JSONResponse(content={
@@ -563,6 +741,7 @@ async def remove_face(reid_num: int):
 async def websocket_analyze_frame(websocket: WebSocket):
     await websocket.accept()
     logger.info("WebSocket client connected.")
+    loop = asyncio.get_event_loop()
     try:
         while True:
             data = await websocket.receive_json()
@@ -582,7 +761,9 @@ async def websocket_analyze_frame(websocket: WebSocket):
                     await websocket.send_json({"error": "Invalid image data."})
                     continue
                 
-                processed_frame, face_info = face_api.process_frame_with_info(frame, use_tracking)
+                processed_frame, face_info = await loop.run_in_executor(
+                    None, face_api.process_frame_with_info, frame, use_tracking
+                )
 
                 processed_image_b64 = image_to_base64(processed_frame) if processed_frame is not None else None
                 

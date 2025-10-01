@@ -8,6 +8,7 @@ class DatabaseManager:
         self.db_path = db_path
         self.client = None
         self.face_db = None
+        self._reid_counter = 0 # Initialize counter
         self.reid_name_map = {}
         self._lock = threading.Lock()
 
@@ -28,8 +29,6 @@ class DatabaseManager:
         """Load existing face data from database."""
         try:
             if self.face_db:
-                print("Check")
-                print(self.face_db.count())
                 result = self.face_db.get(include=["metadatas"])
                 ids = result["ids"]
                 metadatas = result["metadatas"]
@@ -39,33 +38,49 @@ class DatabaseManager:
                     if metadatas and i < len(metadatas):
                         name = metadatas[i].get("name", f"unknown_{i}") or "Unknown"
                     self.reid_name_map[key] = name
-                print(f"Loaded {len(self.reid_name_map)} existing faces")
+                if self.reid_name_map:
+                    # Logic to find the highest existing ID just once on startup
+                    nums = [int(k.split("_")[1]) for k in self.reid_name_map if "_" in k]
+                    self._reid_counter = max(nums) if nums else 0
+                    print(f"Loaded {len(self.reid_name_map)} faces. Next ReID will start from {self._reid_counter + 1}")
         except Exception as e:
             print(f"Loading existing failed: {e}")
 
     def query(self, embedding, threshold: float = 0.25):
-        """Query database for matching face."""
         try:
             with self._lock:
                 if not self.face_db or self.face_db.count() == 0:
                     return None, None
 
-                qr = self.face_db.query(query_embeddings=[embedding], n_results=1)
+                qr = self.face_db.query(query_embeddings=[embedding], n_results=5, include=["metadatas"])
                 ids = qr.get("ids", [[]])[0]
-                distances = qr.get("distances", [[]])
+                distances = (qr.get("distances") or [[]])[0]
+                metadatas_result = qr.get("metadatas", [[]])
+                metas = metadatas_result[0] if metadatas_result is not None else []
 
-                if ids and distances and distances[0][0] < threshold:
-                    key = ids[0]
-                    reid_num = int(key.split("_")[1])
-                    name = self.reid_name_map.get(key, f"unknown_{reid_num}")
-                    return reid_num, name
+                candidates = []
+                for i, key in enumerate(ids):
+                    if i < len(distances) and distances[i] < threshold:
+                        reid_val = metas[i].get("reid", key.split("_")[1])
+                        try:
+                            reid = int(reid_val)
+                        except:
+                            reid = -1
+                        name = metas[i].get("name") or self.reid_name_map.get(key, f"unknown_{reid}")
+                        candidates.append((distances[i], reid, name))
+
+                if candidates:
+                    candidates.sort(key=lambda x: x[0])
+                    return candidates[0][1], candidates[0][2]
+
+                return None, None
         except Exception as e:
             print(f"DB query error: {e}")
-        return None, None
+            return None, None
 
     def add(self, embedding, reid_num: int, name: str) -> bool:
         """Add new face to database."""
-        key = f"reid_{reid_num}"
+        key = f"reid_{reid_num}"  # Removed uuid
         try:
             with self._lock:
                 if not self.face_db:
@@ -81,16 +96,22 @@ class DatabaseManager:
             return False
 
     def update_name(self, reid_num: int, new_name: str) -> bool:
-        """Update name for existing ReID."""
-        key = f"reid_{reid_num}"
+        """Update all entries matching a ReID number."""
         try:
             with self._lock:
                 if not self.face_db:
-                    print("ERROR: face_db is not initialized")
+                    print("ERROR: face_db not initialized")
                     return False
 
-                self.face_db.update(ids=[key], metadatas=[{"name": new_name}])
-                self.reid_name_map[key] = new_name
+                keys_to_update = [k for k in self.reid_name_map if k.startswith(f"reid_{reid_num}")]
+                if not keys_to_update:
+                    print(f"No keys found for ReID {reid_num}")
+                    return False
+
+                for key in keys_to_update:
+                    self.face_db.update(ids=[key], metadatas=[{"name": new_name}])
+                    self.reid_name_map[key] = new_name
+
                 print(f"Updated ReID {reid_num} name to: {new_name}")
                 return True
         except Exception as e:
@@ -98,18 +119,7 @@ class DatabaseManager:
             return False
 
     def next_reid_num(self) -> int:
-        """Get next available ReID number."""
+        """Get next available ReID number efficiently."""
         with self._lock:
-            if not self.reid_name_map:
-                return 1
-
-            nums = []
-            for key in self.reid_name_map.keys():
-                if "_" in key:
-                    try:
-                        num = int(key.split("_")[1])
-                        nums.append(num)
-                    except (ValueError, IndexError):
-                        continue
-
-            return max(nums + [0]) + 1
+            self._reid_counter += 1
+            return self._reid_counter
